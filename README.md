@@ -34,7 +34,7 @@ aldeajuegos      $49.990      -            -          Disponible      https://..
 
 ## Tiendas cubiertas
 
-36 tiendas activas.
+37 tiendas activas.
 
 | Tienda | URL | Ubicación |
 |---|---|---|
