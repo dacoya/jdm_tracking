@@ -907,6 +907,15 @@ def peakgames(html):
 def laloseta(html):
     """WooCommerce generic implementation."""
     return _parse_woo_li(html, link_cls='woocommerce-LoopProduct-link')
+def lamadriguera(html):
+    """WooCommerce generic implementation."""
+    return _parse_woo_li(html, link_cls='woocommerce-LoopProduct-link')
+def lamesadevaras(html):
+    """PrestaShop."""
+    return _parse_presta(html)
+def ludi(html):
+    """WooCommerce generic implementation."""
+    return _parse_woo_li(html, link_cls='woocommerce-LoopProduct-link')
     
 # ── Site registry ──────────────────────────────────────────────────────────────
 #
@@ -952,13 +961,20 @@ sites = [
     {'name': 'buho', 'base_url': 'https://buhojuegosdemesa.cl/collections/catalogo', 'parser': buhojuegosdemesa, 'pagination': 'shopify', 'output': '../data/buho_jdm.csv'},
     {'name': 'mirzu', 'base_url': 'https://mirzu.cl/tienda', 'parser': mirzu, 'pagination': 'woo', 'output': '../data/mirzu_jdm.csv'},
     {'name': 'peakgames', 'base_url': 'https://www.peakgames.cl/collection/juegos-de-mesa', 'parser': peakgames, 'pagination': 'page_param', 'output': '../data/peakgames_jdm.csv'},
-    {'name': 'laloseta', 'base_url': 'https://laloseta.cl/categoria-producto/juego-de-mesa', 'parser': laloseta, 'pagination': 'woo', 'output': '../data/laloseta_jdm.csv'}
+    {'name': 'laloseta', 'base_url': 'https://laloseta.cl/categoria-producto/juego-de-mesa', 'parser': laloseta, 'pagination': 'woo', 'output': '../data/laloseta_jdm.csv'},
+    {'name': 'lamadriguera', 'base_url': 'https://tiendalamadriguera.cl/product-category/juegos-de-mesa', 'parser': lamadriguera, 'pagination': 'woo', 'output': '../data/tiendalamadriguera_jdm.csv'},
+    {'name': 'lamesadevaras', 'base_url': 'https://lamesadevaras.cl/9-juegos-de-mesa', 'parser': lamesadevaras, 'pagination': 'page_param', 'output': '../data/lamesadevaras_jdm.csv'},
+    {'name': 'ludi', 'base_url': 'https://www.ludi.cl/tienda', 'parser': ludi, 'pagination': 'product-page', 'output': '../data/ludi_jdm.csv'}
+    
 ]
 
 
 
 def build_url(base_url, pagination, page):
     """Construct the paginated URL for a given page number and pagination style."""
+
+    sep = '&' if '?' in base_url else '?'
+    
     if pagination == 'gatoarcano':
         return f"{base_url}/?jsf=epro-archive-products&pagenum={page}"
     if pagination == 'calabozo':
@@ -971,4 +987,6 @@ def build_url(base_url, pagination, page):
         return f"{base_url}?p={page}"
     if pagination == 'woo':
         return f"{base_url}/page/{page}/"
+    if pagination == 'product-page':
+        return f"{base_url}{sep}product-page={page}"
     raise ValueError(f"Unknown pagination style: {pagination}")
