@@ -34,28 +34,46 @@ aldeajuegos      $49.990      -            -          Disponible      https://..
 
 ## Tiendas cubiertas
 
-| Tienda | Plataforma |
-|---|---|
-| Flexogames | Shopify |
-| La Fortaleza PUQ | Custom |
-| Planeta Loz | PrestaShop |
-| Updown Juegos | WooCommerce |
-| Aldea Juegos | PrestaShop |
-| El Patio Geek | Shopify |
-| Mangai Games | WooCommerce |
-| Cartones Pesados | WooCommerce Blocks |
-| Cartonazo | WooCommerce |
-| Demente Games | PrestaShop |
-| DR Juegos | PrestaShop |
-| Vudu Gaming | Custom |
-| Piedra Bruja | Shopify |
-| Gato Arcano | WooCommerce + AJAX |
-| Ludi Puerto | WooCommerce |
-| Magic Sur | PrestaShop |
-| Game of Magic Tienda | BS-Collection |
-| Top 8 | BS-Collection |
-| Revaruk | WooCommerce |
-| Cardgame | BS-Collection |
+36 tiendas activas.
+
+| Tienda | URL | Plataforma |
+|---|---|---|
+| Flexogames | flexogames.cl | Shopify |
+| La Fortaleza PUQ | lafortalezapuq.cl | Shopify |
+| Planeta Loz | planetaloz.cl | PrestaShop |
+| Updown Juegos | updown.cl | WooCommerce |
+| Aldea Juegos | aldeajuegos.cl | PrestaShop |
+| El Patio Geek | elpatiogeek.cl | Shopify |
+| Mangai Games | mangaigames.cl | WooCommerce |
+| Cartones Pesados | cartonespesados.cl | WooCommerce Blocks |
+| Cartonazo | cartonazo.com | WooCommerce |
+| Demente Games | dementegames.cl | PrestaShop |
+| DR Juegos | drjuegos.cl | PrestaShop |
+| Vudu Gaming | vudugaming.cl | Custom |
+| Piedra Bruja | piedrabruja.cl | Shopify |
+| Gato Arcano | gatoarcano.cl | WooCommerce + AJAX |
+| Ludi Puerto | ludipuerto.cl | WooCommerce |
+| Magic Sur | magicsur.cl | PrestaShop |
+| Game of Magic Tienda | gameofmagictienda.cl | BS-Collection |
+| Top 8 | top8.cl | BS-Collection |
+| Revaruk | revaruk.cl | WooCommerce |
+| Cardgame | cardgame.cl | BS-Collection |
+| La Bóveda del Mago | labovedadelmago.cl | WooCommerce |
+| Calabozo Tienda | calabozotienda.cl | Custom |
+| Zona X Gamers | zonaxgamers.cl | PrestaShop |
+| Café 2d6 | cafe2d6.cl | Shopify |
+| Griffin Games | griffingames.cl | WooCommerce |
+| Play Center | playcenter.cl | WooCommerce |
+| Juegos Enroque | juegosenroque.cl | Shopify |
+| Kaio Juegos | kaiojuegos.cl | PrestaShop |
+| Mana House | manahouse.cl | Shopify |
+| Devir | devir.cl | Custom |
+| Third Impact (Asmodee) | thirdimpact.cl | PrestaShop |
+| Third Impact (Devir) | thirdimpact.cl | PrestaShop |
+| Búho Juegos de Mesa | buhojuegosdemesa.cl | Shopify |
+| Mirzu | mirzu.cl | WooCommerce |
+| Peak Games | peakgames.cl | BS-Collection |
+| La Loseta | laloseta.cl | WooCommerce |
 
 ---
 
@@ -236,7 +254,7 @@ def mi_tienda(html):
     'name':       'mitienda',
     'base_url':   'https://www.mitienda.cl/juegos-de-mesa',
     'parser':     mi_tienda,
-    'pagination': 'woo',        # 'shopify' | 'woo' | 'page_param' | 'gatoarcano'
+    'pagination': 'woo',        # 'shopify' | 'woo' | 'page_param' | 'gatoarcano' | 'calabozo' | 'devir'
     'output':     '../data/mitienda_jdm.csv',
 },
 ```
