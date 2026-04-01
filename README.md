@@ -6,7 +6,7 @@
 
 ## ¿Qué hace?
 
-Recorre los catálogos de **20 tiendas chilenas** de juegos de mesa, guarda los precios en CSVs locales, y te deja buscar, comparar, y filtrar ofertas directamente desde la terminal — sin abrir el navegador.
+Recorre los catálogos de **+30 tiendas chilenas** de juegos de mesa, guarda los precios en CSVs locales, y te deja buscar, comparar, y filtrar ofertas directamente desde la terminal — sin abrir el navegador.
 
 ```
 python main.py --name "clank"
