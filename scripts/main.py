@@ -40,6 +40,11 @@ from utils import normalize, clean_title, format_discount, sort_table, paginate,
 # Single merged data file — replaces per-query iteration over 50+ CSVs.
 JSON_PATH = '../data/products.json'
 
+# token_sort_ratio threshold for treating two normalized titles as the same game.
+# Catches minor cross-store naming differences (e.g. with/without "LCG") while
+# keeping distinct products (base game vs. expansion) separate.
+FUZZY_MATCH_THRESHOLD = 90
+
 
 def merge_to_json(results: dict, targets: list) -> None:
     """
@@ -62,9 +67,9 @@ def merge_to_json(results: dict, targets: list) -> None:
 
     target_names = {s['name'] for s in targets}
     for name, df in results.items():
-        if name not in target_names:
+        if name not in target_names or df.empty:
             continue
-        existing[name] = [] if df.empty else df.to_dict(orient='records')
+        existing[name] = df.to_dict(orient='records')
 
     os.makedirs(os.path.dirname(JSON_PATH), exist_ok=True)
     with open(JSON_PATH, 'w', encoding='utf-8') as f:
@@ -198,11 +203,34 @@ def fuzzy_search(query, df, score_cutoff=80):
         score_cutoff=score_cutoff,
     )
 
-    return [(norm_to_original[norm], score) for norm, score, _ in matches]
+    # Cluster near-duplicate norms so the pick list doesn't show the same
+    # game twice under slightly different store-specific names
+    # (e.g. "Arkham Horror: El Juego de Cartas" and the same title with "LCG").
+    # Results are already score-sorted; keep the highest-scoring representative.
+    seen: list[str] = []
+    deduped: list[tuple[str, float]] = []
+    for norm, score, _ in matches:
+        if all(fuzz.token_sort_ratio(norm, s) < FUZZY_MATCH_THRESHOLD for s in seen):
+            seen.append(norm)
+            deduped.append((norm_to_original[norm], score))
+
+    return deduped
 
 
 def print_price_table(df, norm_key, sort_by='discount'):
-    rows = df[df['norm'] == norm_key].copy()
+    # Fuzzy-expand the norm lookup: include rows from stores that list the same
+    # game under a slightly different name (e.g. with/without "LCG", minor
+    # subtitle differences) so one pick shows the complete cross-store price picture.
+    similar_norms = {
+        n for n, _, _ in process.extract(
+            norm_key,
+            df['norm'].unique().tolist(),
+            scorer=fuzz.token_sort_ratio,
+            score_cutoff=FUZZY_MATCH_THRESHOLD,
+            limit=None,
+        )
+    }
+    rows = df[df['norm'].isin(similar_norms)].copy()
     if rows.empty:
         print("No results found.")
         return
@@ -264,11 +292,6 @@ def search_mode(query, sort_by='discount'):
     selected_title = matches[choice - 1][0]
     selected_norm  = normalize(selected_title)
     print_price_table(df, selected_norm, sort_by=sort_by)
-
-def parse_price(value):
-    if value is None:
-        return None
-    return float(str(value).replace('.', '').replace(',', '').strip())
 
 def deals_mode(
     store_filter=None,
@@ -417,25 +440,6 @@ def list_mode(store_filter=None, sort_by='store', in_stock_only=False):
 
 
 def main():
-    help_text = """
-main.py
--------
-Usage:
-
-    python main.py -u / --update            Scrape all sites, write CSVs
-    python main.py -u --dry-run              Page 1 only per site (parser testing)
-    python main.py -u --sites flexo updown  Update a subset of sites
-
-    python main.py --name clank              Fuzzy search, pick a result, see prices
-    python main.py --name clank --sort discount    Sort price table by discount (default)
-    python main.py --name clank --sort price       Sort by cheapest effective price
-    python main.py --name clank --sort store       Sort alphabetically by store
-
-    python main.py --deals                  All discounted products, best deals first
-    python main.py --deals --store flexo     Deals from one store only
-    python main.py --list                    Paginated listing of all products
-    python main.py --list --store updown     Products from one store
-"""
     parser = argparse.ArgumentParser(
         description="Board game store scraper / price search",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -485,10 +489,7 @@ Usage:
     
     parser.add_argument('--store', metavar='NAME',
         help="With --deals or --list: filter to a single store")
-    
-    parser.add_argument('--help_info', action='help', help=help_text)
 
-    
     args = parser.parse_args()
 
     # --- search ---
