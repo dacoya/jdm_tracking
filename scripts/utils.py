@@ -79,8 +79,16 @@ _NOISE_WORD = (
 )
 
 # Pass 1: noise phrase preceded by a proper word boundary (space, separator, or start).
+# The optional (?:el|la|los|las) group pulls the Spanish definite article INTO the
+# match so that _strip_unless_subtitle can decide whether to keep or drop the whole
+# "El Juego de Mesa" cluster in one shot — preventing an orphaned "El" from being
+# left behind after the noise phrase is stripped.
+# Note: the leading separator (e.g. "- " before "Juego de Mesa") is intentionally
+# NOT consumed here.  Leaving it in place lets pass 3 recognise any noise words that
+# follow (e.g. "Cooperativo" in "- Juego de Mesa Cooperativo") as punct-separated
+# tags that it can strip independently.
 _TITLE_NOISE = re.compile(
-    r'(?:^|(?<=[\s\-\|,;:]))[\-\|,;:\s]*(?:' + _NOISE_PHRASE + r')\s*[\-\|,;:]?',
+    r'(?:^|(?<=[\s\-\|,;:]))(?:\b(?:el|la|los|las)\b\s+)?(?:' + _NOISE_PHRASE + r')\s*[\-\|,;:]?',
     re.IGNORECASE,
 )
 
@@ -91,11 +99,46 @@ _TITLE_NOISE_CONCAT = re.compile(
     re.IGNORECASE,
 )
 
-# Pass 3: trailing comma-separated noise words left after primary phrase removal.
+# Pass 3: trailing comma/dash-separated noise words left after primary phrase removal.
+# The preceding separator MUST contain at least one punctuation char (comma, colon,
+# dash, pipe, semicolon) — pure whitespace is NOT a valid separator here.  This is
+# the key guard that prevents stripping noise words that are part of the actual game
+# name: "El Rey De Los Dados" has only a space between "Los" and "Dados" (a natural
+# word boundary), whereas "Pandemic - Cooperativo, dados" has "-" and "," (real
+# tag delimiters).  The lookahead mirrors the same requirement so that chaining
+# (" - Cooperativo, Familiar") is also recognised correctly.
 _TRAILING_NOISE = re.compile(
-    r'[\-\|,;:\s]+(?:' + _NOISE_WORD + r')(?=[\-\|,;:\s]|$)',
+    r'(?:[\-\|,;:]\s*|\s+[\-\|,;:]\s*)(?:' + _NOISE_WORD + r')'
+    r'(?=(?:[\-\|,;:]\s*|\s+[\-\|,;:]\s*)(?:' + _NOISE_WORD + r')|\s*$)',
     re.IGNORECASE,
 )
+
+# Guards that prevent stripping noise phrases that are actually part of a
+# product's subtitle (e.g. "Arkham Horror: El Juego de Cartas" → keep whole).
+# Spanish definite article immediately before a noise phrase signals a genuine
+# subtitle ("El Juego de Cartas" = "The Card Game") not a generic category tag.
+_ARTICLE_PREFIX = re.compile(r'\b(?:el|la|los|las)\s*$', re.IGNORECASE)
+_SUBTITLE_TAIL  = re.compile(r'\b(?:el|la|los|las)\s+juego\s+de\s*$', re.IGNORECASE)
+
+
+def _strip_unless_subtitle(m: re.Match) -> str:
+    """Pass-1 callback: keep the noise phrase when introduced by a definite article,
+    UNLESS the phrase is 'Juego de Mesa'/'Board Game' — those are always redundant
+    category labels in a board-game store, never a distinguishing subtitle.
+
+    The optional article group in _TITLE_NOISE may now be INSIDE the match, so we
+    check both the matched text itself and the preceding context for an article."""
+    phrase = m.group(0)
+    if re.search(r'juego\s+de\s+mesa|board\s+game', phrase, re.IGNORECASE):
+        return ' '
+    article_in_phrase = bool(re.match(r'[\-\|,;:\s]*\b(?:el|la|los|las)\b', phrase, re.IGNORECASE))
+    article_before    = bool(_ARTICLE_PREFIX.search(m.string[:m.start()]))
+    return phrase if (article_in_phrase or article_before) else ' '
+
+
+def _keep_if_subtitle_tail(m: re.Match) -> str:
+    """Pass-3 callback: keep a trailing noise word when it follows 'article juego de'."""
+    return m.group(0) if _SUBTITLE_TAIL.search(m.string[:m.start()]) else ''
 
 
 def clean_title(text: str) -> str:
@@ -109,13 +152,18 @@ def clean_title(text: str) -> str:
     - No-space joins:      "Pandemic La CuraJuego de Mesa, Cooperativo, Juego de dados"
                                                          → "Pandemic La Cura"
     - Mid-title noise:     "Clank! Juego de Mesa Aventura" → "Clank! Aventura"
+    - Subtitle protection: "Arkham Horror: El Juego de Cartas" → unchanged
     """
     if not isinstance(text, str):
         return text
-    cleaned = _TITLE_NOISE.sub(' ', text)
+    cleaned = _TITLE_NOISE.sub(_strip_unless_subtitle, text)
     cleaned = _TITLE_NOISE_CONCAT.sub('', cleaned)
-    cleaned = _TRAILING_NOISE.sub('', cleaned)
-    return re.sub(r'\s{2,}', ' ', cleaned).strip(' -|,:;')
+    cleaned = _TRAILING_NOISE.sub(_keep_if_subtitle_tail, cleaned)
+    cleaned = re.sub(r'\s{2,}', ' ', cleaned)
+    # Pass 4: drop a trailing orphaned article left behind by noise stripping
+    # (e.g. "Catan el [Juego de Mesa stripped]" → "Catan el" → "Catan").
+    cleaned = re.sub(r'\s+\b(?:el|la|los|las)\b\s*$', '', cleaned, flags=re.IGNORECASE)
+    return cleaned.strip(' –—-|,:;')
 
 
 # ---------------------------------------------------------------------------

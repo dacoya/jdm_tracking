@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tablero-cl"
+version = "0.1.0"
+description = "Comparador de precios de juegos de mesa en Chile — scraping + búsqueda fuzzy desde la terminal."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "requests",
+    "beautifulsoup4",
+    "pandas",
+    "rapidfuzz",
+    "tqdm",
+    "questionary",
+]
+
+[project.scripts]
+tablero = "tablero.main:main"
+
+[tool.setuptools]
+packages = ["tablero"]
+
+[tool.setuptools.package-dir]
+tablero = "scripts"

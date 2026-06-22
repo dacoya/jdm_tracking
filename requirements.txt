@@ -12,3 +12,6 @@ rapidfuzz
 
 # Command-line progress tracking
 tqdm
+
+# Interactive terminal UI (arrow-key menus)
+questionary
