@@ -1,0 +1,14 @@
+README.md
+pyproject.toml
+scripts/__init__.py
+scripts/main.py
+scripts/paths.py
+scripts/scrape.py
+scripts/tui.py
+scripts/utils.py
+tablero_cl.egg-info/PKG-INFO
+tablero_cl.egg-info/SOURCES.txt
+tablero_cl.egg-info/dependency_links.txt
+tablero_cl.egg-info/entry_points.txt
+tablero_cl.egg-info/requires.txt
+tablero_cl.egg-info/top_level.txt
