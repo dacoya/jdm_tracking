@@ -8,21 +8,22 @@
 
 Recorre los catálogos de **+30 tiendas chilenas** de juegos de mesa, guarda los precios en CSVs locales, y te deja buscar, comparar, y filtrar ofertas directamente desde la terminal — sin abrir el navegador.
 
-```
-python main.py --name "clank"
-```
-```
-Resultados para 'clank' (6 encontrados):
+Corre `tablero` sin argumentos para abrir el **menú interactivo**, o pasa los flags directamente:
 
-    1. Clank!                              (100%)
-    2. Clank!: En las Catacumbas           (100%)
-    3. Clank! In! Space!                   ( 97%)
-    4. Clank! Sunken Treasures             ( 95%)
+```
+tablero --name "clank"
+```
+```
+Resultados para 'clank' (24 encontrados):
+
+    1. Clank             desde   $47.990 · 14 tiendas           (100%)
+    2. Clank Legacy      desde  $109.990 · 2 tiendas · agotado   (75%)
+    3. Clank Catacumbas  desde   $58.990 · 12 tiendas            (69%)
     ...
 
-Selecciona un número (0 para salir): 2
+Selecciona un número para ver precios (0 para volver al menú): 3
 
-Clank!: En las Catacumbas
+Clank Catacumbas
 Tienda           Precio       Oferta       Descuento  Disponibilidad  URL
 ---------------  -----------  -----------  ---------  --------------  ----
 drjuegos         $49.990      $35.990      -28%       Disponible      https://...
@@ -86,8 +87,11 @@ aldeajuegos      $49.990      -            -          Disponible      https://..
 ```bash
 git clone https://github.com/tu-usuario/tablero-cl
 cd tablero-cl
-pip install -r requirements.txt
+pip install -e .            # instala las dependencias y el comando `tablero`
 ```
+
+Tras la instalación, el comando `tablero` queda disponible desde cualquier directorio.
+Para desarrollo también puedes correr el módulo directamente: `python scripts/main.py <args>`.
 
 **Dependencias:**
 
@@ -97,16 +101,31 @@ beautifulsoup4
 pandas
 rapidfuzz
 tqdm
+questionary
 ```
 
 **Estructura del proyecto:**
 
 ```
 tablero-cl/
-├── main.py       # CLI: búsqueda, filtros, modo actualización
-├── scrape.py     # Parsers por tienda + registro de sitios
-├── utils.py      # Normalización, precios, ordenamiento, paginación
-├── data/         # CSVs generados por el scraper
+├── pyproject.toml    # empaquetado + comando `tablero`
+├── requirements.txt
+├── scripts/          # paquete `tablero`
+│   ├── __init__.py
+│   ├── main.py       # CLI: modos, dispatch, pipeline de actualización
+│   ├── tui.py        # menú interactivo (questionary)
+│   ├── scrape.py     # parsers por tienda + registro de sitios
+│   ├── utils.py      # normalización, precios, ordenamiento, paginación
+│   ├── paths.py      # rutas de datos independientes del directorio
+│   ├── metadata.py   # estado por tienda + caché de stats (incremental)
+│   ├── validation.py # detección de anomalías de precio
+│   ├── history.py    # historial de precios + sparklines
+│   ├── stats.py      # estadísticas por tienda + resumen de mercado
+│   ├── analytics.py  # sorts inteligentes + leaderboard
+│   ├── dedup.py      # dedup por URL + agrupación de variantes
+│   ├── export.py     # exportar a csv/json/html
+│   └── alerts.py     # alertas de precio por palabra clave
+├── data/             # products.json, metadata.json, history.json, CSVs, exports/
 └── README.md
 ```
 
@@ -114,58 +133,123 @@ tablero-cl/
 
 ## Uso
 
-### Actualizar la base de datos
+### Modo interactivo
 
-Scraping completo en paralelo (4 workers por defecto):
+Corre el comando sin argumentos para navegar con flechas — elige entre buscar, ver ofertas, listar el catálogo o actualizar precios, sin recordar flags:
 
 ```bash
-python main.py -u
+tablero
+```
+
+Todos los flags de abajo siguen funcionando para uso directo o scripting.
+
+### Actualizar la base de datos
+
+Scraping completo en paralelo (20 workers por defecto):
+
+```bash
+tablero -u
 ```
 
 ```bash
-python main.py -u -w 5                    # 5 workers simultáneos
-python main.py -u --dry-run               # solo página 1 por tienda (pruebas)
-python main.py -u --sites flexo cartonazo # actualizar tiendas específicas
+tablero -u -w 5                    # 5 workers simultáneos
+tablero -u --dry-run               # solo página 1 por tienda (pruebas)
+tablero -u --sites flexo cartonazo # actualizar tiendas específicas
 ```
 
 ### Buscar un juego
 
 ```bash
-python main.py --name "pandemic"
-python main.py --name "catan" --sort price      # ordenar por precio
-python main.py --name "root" --sort store       # ordenar por tienda
-python main.py --name "clank" --sort discount   # ordenar por descuento (default)
+tablero --name "pandemic"
+tablero --name "catan"
+tablero --name "root"
 ```
 
-La búsqueda ignora tildes, signos de puntuación, y sufijos de idioma:
+Los resultados se ordenan por relevancia (el juego base primero) y muestran el precio
+más bajo, en cuántas tiendas está, y disponibilidad. Escribe el número de un resultado
+para ver sus precios por tienda, o `0` para volver al menú principal.
+
+Cada resultado muestra el **precio más bajo**, en **cuántas tiendas** está, y si
+hay stock — y el ranking pone el juego base primero (no las expansiones ni los
+accesorios). La búsqueda ignora tildes, puntuación y sufijos de idioma, y **tolera
+errores de tipeo**:
 
 | Lo que escribes | Encuentra |
 |---|---|
-| `catan` | `Catan`, `CATAN`, `Catán` |
-| `clank catacumbas` | `Clank!: En las Catacumbas (Español)` |
-| `pandemic` | `Pandemic`, `Pandemic (En Español)` |
-| `terraforming` | `Terraforming Mars`, `Terraforming Mars: Expedición Ares` |
+| `catan` | `Catan` primero, luego ediciones y expansiones |
+| `clank catacumbas` | `Clank Catacumbas` (la expansión exacta, no el base) |
+| `pandemc` (con typo) | `Pandemic` |
+| `terraformin` (incompleto) | `Terraforming Mars` |
 
 ### Ver todas las ofertas
 
 ```bash
-python main.py --deals                          # todas las ofertas, mayor descuento primero
-python main.py --deals --sort price             # más baratas primero
-python main.py --deals --store cartonazo        # una tienda específica
-python main.py --deals --in-stock               # solo disponibles
-python main.py --deals --price 10000:50000      # rango de precio (oferta)
-python main.py --deals --lower-price 20000      # precio mínimo
-python main.py --deals --higher-price 40000     # precio máximo
+tablero --deals                          # todas las ofertas, mayor descuento primero
+tablero --deals --sort price             # más baratas primero
+tablero --deals --store cartonazo        # una tienda específica
+tablero --deals --in-stock               # solo disponibles
+tablero --deals --price 10000:50000      # rango de precio (oferta)
+tablero --deals --lower-price 20000      # precio mínimo
+tablero --deals --higher-price 40000     # precio máximo
 ```
 
 ### Listar catálogo completo
 
 ```bash
-python main.py --list                           # todos los productos
-python main.py --list --store updown            # catálogo de una tienda
-python main.py --list --sort price              # ordenar por precio
-python main.py --list --in-stock                # solo disponibles
+tablero --list                           # todos los productos
+tablero --list --store updown            # catálogo de una tienda
+tablero --list --sort price              # ordenar por precio
+tablero --list --in-stock                # solo disponibles
 ```
+
+### Sorts inteligentes
+
+`--deals` y `--list` aceptan, además de `discount/price/offer`, tres órdenes derivados:
+
+```bash
+tablero --deals --sort value             # mejor relación precio/stock (la mejor compra real)
+tablero --deals --sort scarcity          # juegos en pocas tiendas (demanda concentrada)
+tablero --deals --sort volatility        # mayor variación entre tiendas (arbitraje)
+```
+
+### Leaderboard de tiendas
+
+```bash
+tablero --leaderboard                    # ranking: más barata, mejor descuento, más stock
+```
+
+### Historial de precios
+
+El historial se acumula en cada `--update` (en `data/history.json`):
+
+```bash
+tablero --history "catan"                # sparklines de precio por tienda (▁▂▃▅▇)
+```
+
+### Alertas de precio (para cron)
+
+```bash
+tablero --alert --watch "wingspan" "root" --threshold 30000 --alert-out alertas.json
+```
+
+### Exportar resultados
+
+```bash
+tablero --deals --in-stock --export csv  # → data/exports/*.csv (también json, html)
+tablero --list --store updown --export html
+```
+
+### Actualización incremental
+
+Rescrapea solo las tiendas obsoletas en vez de todas — más rápido y amable con los servidores:
+
+```bash
+tablero --update --incremental           # solo tiendas con datos de > 24h
+tablero --update --incremental --max-age 12
+```
+
+> Cada `--update` también valida los precios (rechaza ofertas > original, precios ≤ 0,
+> descuentos > 90 %, títulos vacíos) y registra metadata por tienda en `data/metadata.json`.
 
 ---
 
@@ -212,7 +296,17 @@ El pipeline de normalización:
 5. Reemplaza puntuación con espacio
 6. Colapsa whitespace
 
-El matching usa `token_set_ratio` de rapidfuzz — el orden de las palabras no importa, y palabras extra en el título no penalizan el score.
+El matching (en `fuzzy_search`, `main.py`) tiene dos etapas:
+
+1. **Inclusión** — `WRatio` de rapidfuzz (combina ratio parcial + por tokens) con
+   corte 80: amplia y tolerante a errores de tipeo (`pandemc` → `Pandemic`).
+2. **Ranking** — un score compuesto `0.3·token_set + 0.4·token_sort + 0.3·partial`
+   más bonos por coincidencia exacta / prefijo, y desempate por popularidad
+   (nº de tiendas) y longitud del título. Así el juego base queda primero en vez
+   de empatar todo en 100 %.
+
+Las variantes del mismo juego entre tiendas se agrupan en una sola entrada, y cada
+resultado se enriquece con el precio más bajo, el nº de tiendas y disponibilidad.
 
 ### Precios chilenos
 
