@@ -1,0 +1,263 @@
+{
+  "sites": {
+    "flexo": {
+      "last_scrape": 1788277319,
+      "product_count": 920,
+      "success": true
+    },
+    "lafortalezapuq": {
+      "last_scrape": 1788277319,
+      "product_count": 1280,
+      "success": true
+    },
+    "planetaloz": {
+      "last_scrape": 1788277319,
+      "product_count": 1812,
+      "success": true
+    },
+    "updown": {
+      "last_scrape": 1788277319,
+      "product_count": 3361,
+      "success": true
+    },
+    "aldeajuegos": {
+      "last_scrape": 1788277319,
+      "product_count": 313,
+      "success": true
+    },
+    "elpatiogeek": {
+      "last_scrape": 1788279538,
+      "product_count": 976,
+      "success": true
+    },
+    "mangaigames": {
+      "last_scrape": 1788277319,
+      "product_count": 306,
+      "success": true
+    },
+    "cartonespesados": {
+      "last_scrape": 1788277319,
+      "product_count": 1438,
+      "success": true
+    },
+    "cartonazo": {
+      "last_scrape": 1788277319,
+      "product_count": 156,
+      "success": true
+    },
+    "dementegames": {
+      "last_scrape": 1788277319,
+      "product_count": 0,
+      "success": false
+    },
+    "drjuegos": {
+      "last_scrape": 1788277319,
+      "product_count": 1933,
+      "success": true
+    },
+    "vudugaming": {
+      "last_scrape": 1788277319,
+      "product_count": 2522,
+      "success": true
+    },
+    "piedrabruja": {
+      "last_scrape": 1788277319,
+      "product_count": 299,
+      "success": true
+    },
+    "gatoarcano": {
+      "last_scrape": 1788277319,
+      "product_count": 1620,
+      "success": true
+    },
+    "ludipuerto": {
+      "last_scrape": 1788277319,
+      "product_count": 191,
+      "success": true
+    },
+    "magicsur": {
+      "last_scrape": 1788277319,
+      "product_count": 0,
+      "success": false
+    },
+    "gameofmagictienda": {
+      "last_scrape": 1788277319,
+      "product_count": 620,
+      "success": true
+    },
+    "top8": {
+      "last_scrape": 1788277319,
+      "product_count": 282,
+      "success": true
+    },
+    "revaruk": {
+      "last_scrape": 1788277319,
+      "product_count": 455,
+      "success": true
+    },
+    "cardgame": {
+      "last_scrape": 1784578540,
+      "product_count": 0,
+      "success": false
+    },
+    "labovedadelmago": {
+      "last_scrape": 1788277319,
+      "product_count": 735,
+      "success": true
+    },
+    "calabozotienda": {
+      "last_scrape": 1788277319,
+      "product_count": 0,
+      "success": false
+    },
+    "zonaxgamers": {
+      "last_scrape": 1788277319,
+      "product_count": 204,
+      "success": true
+    },
+    "cafe2d6": {
+      "last_scrape": 1788277319,
+      "product_count": 127,
+      "success": true
+    },
+    "griffingames": {
+      "last_scrape": 1788277319,
+      "product_count": 205,
+      "success": true
+    },
+    "playcenter": {
+      "last_scrape": 1788277319,
+      "product_count": 298,
+      "success": true
+    },
+    "enroque": {
+      "last_scrape": 1788277319,
+      "product_count": 1625,
+      "success": true
+    },
+    "kaiojuegos": {
+      "last_scrape": 1788277319,
+      "product_count": 230,
+      "success": true
+    },
+    "manahouse": {
+      "last_scrape": 1788277319,
+      "product_count": 342,
+      "success": true
+    },
+    "devir": {
+      "last_scrape": 1788277319,
+      "product_count": 717,
+      "success": true
+    },
+    "thirdimpact_asmodee": {
+      "last_scrape": 1788277319,
+      "product_count": 51,
+      "success": true
+    },
+    "thirdimpact_devir": {
+      "last_scrape": 1788277319,
+      "product_count": 33,
+      "success": true
+    },
+    "buho": {
+      "last_scrape": 1788277319,
+      "product_count": 120,
+      "success": true
+    },
+    "mirzu": {
+      "last_scrape": 1788277319,
+      "product_count": 417,
+      "success": true
+    },
+    "peakgames": {
+      "last_scrape": 1788277319,
+      "product_count": 156,
+      "success": true
+    },
+    "laloseta": {
+      "last_scrape": 1788277319,
+      "product_count": 278,
+      "success": true
+    },
+    "lamadriguera": {
+      "last_scrape": 1788277319,
+      "product_count": 0,
+      "success": false
+    },
+    "lamesadevaras": {
+      "last_scrape": 1788277319,
+      "product_count": 126,
+      "success": true
+    },
+    "ludi": {
+      "last_scrape": 1784578540,
+      "product_count": 0,
+      "success": false
+    },
+    "wargaming": {
+      "last_scrape": 1788277319,
+      "product_count": 0,
+      "success": false
+    },
+    "darkhobbies": {
+      "last_scrape": 1788277319,
+      "product_count": 373,
+      "success": true
+    },
+    "shivano": {
+      "last_scrape": 1788277319,
+      "product_count": 1252,
+      "success": true
+    },
+    "guildreams": {
+      "last_scrape": 1788277319,
+      "product_count": 248,
+      "success": true
+    },
+    "playkingdom": {
+      "last_scrape": 1788277319,
+      "product_count": 226,
+      "success": true
+    },
+    "juegosdelbosque": {
+      "last_scrape": 1784578540,
+      "product_count": 0,
+      "success": false
+    },
+    "kimunaustral": {
+      "last_scrape": 1784578540,
+      "product_count": 0,
+      "success": false
+    },
+    "jugones": {
+      "last_scrape": 1788277319,
+      "product_count": 184,
+      "success": true
+    },
+    "tertulia": {
+      "last_scrape": 1788277319,
+      "product_count": 214,
+      "success": true
+    },
+    "lautarojuegos": {
+      "last_scrape": 1788277319,
+      "product_count": 351,
+      "success": true
+    },
+    "araucania": {
+      "last_scrape": 1788277319,
+      "product_count": 0,
+      "success": false
+    },
+    "tentami": {
+      "last_scrape": 1788280325,
+      "product_count": 226,
+      "success": true
+    }
+  },
+  "price_stats": {
+    "median_discount": 0.011211948450519576,
+    "volatility_mean": 0.07090181884729005
+  }
+}

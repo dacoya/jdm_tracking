@@ -35,32 +35,39 @@ aldeajuegos      $49.990      -            -          Disponible      https://..
 
 ## Tiendas cubiertas
 
-37 tiendas activas.
+46 tiendas activas.
 
 | Tienda | URL | Ubicación |
 |---|---|---|
 | Aldea Juegos | aldeajuegos.cl | Santiago |
 | Café 2d6 | cafe2d6.cl | Santiago |
-| Cartones Pesados | cartonespesados.cl | Santiago |
 | Cartonazo | cartonazo.com | Santiago |
+| Cartones Pesados | cartonespesados.cl | Santiago |
+| DarkHobbies | darkhobbies.cl | Santiago |
 | Demente Games | dementegames.cl | Santiago |
 | Devir | devir.cl | Santiago |
 | DR Juegos | drjuegos.cl | Santiago |
 | El Patio Geek | elpatiogeek.cl | Santiago |
 | Griffin Games | griffingames.cl | Santiago |
+| Guildreams | guildreams.com | Santiago |
 | Juegos Enroque | juegosenroque.cl | Santiago |
+| Jugones | jugones.cl | Santiago |
 | Kaio Juegos | kaiojuegos.cl | Santiago |
 | La Madriguera | tiendalamadriguera.cl | Santiago |
-| Ludi | ludi.cl | Santiago |
 | Magic Sur | magicsur.cl | Santiago |
 | Mana House | manahouse.cl | Santiago |
 | Mangai Games | mangaigames.cl | Santiago |
 | Piedra Bruja | piedrabruja.cl | Santiago |
 | Play Center | playcenter.cl | Santiago |
+| PlayKingdom | playkingdom.cl | Santiago |
 | Revaruk | revaruk.cl | Santiago |
+| Shivano | shivano.cl | Santiago |
+| Tentami | tentami.cl | Santiago |
+| Tertulia | tertulia.cl | Santiago |
 | Third Impact | thirdimpact.cl | Santiago |
 | Updown Juegos | updown.cl | Santiago |
 | Vudu Gaming | vudugaming.cl | Santiago |
+| Wargaming | wargaming.cl | Santiago |
 | Zona X Gamers | zonaxgamers.cl | Santiago |
 | Calabozo Tienda | calabozotienda.cl | Concepción |
 | Game of Magic Tienda | gameofmagictienda.cl | Concepción |
@@ -71,11 +78,12 @@ aldeajuegos      $49.990      -            -          Disponible      https://..
 | Flexogames | flexogames.cl | La Serena |
 | La Bóveda del Mago | labovedadelmago.cl | La Serena |
 | Mirzu | mirzu.cl | Arica |
+| Lautaro Juegos | lautarojuegos.cl | Villa Alemana |
 | Lamesadevaras | lamesadevaras.cl | Puerto Varas |
 | La Fortaleza PUQ | lafortalezapuq.cl | Punta Arenas |
 | Ludi Puerto | ludipuerto.cl | Talcahuano |
+| Araucanía Gaming | araucaniagaming.cl | Temuco |
 | Top 8 | top8.cl | Temuco |
-| Cardgame | cardgame.cl | Valdivia |
 | Búho Juegos de Mesa | buhojuegosdemesa.cl | Valparaíso |
 
 
@@ -145,14 +153,15 @@ Todos los flags de abajo siguen funcionando para uso directo o scripting.
 
 ### Actualizar la base de datos
 
-Scraping completo en paralelo (20 workers por defecto):
+Scraping completo en paralelo (5 workers por defecto — suave con Cloudflare):
 
 ```bash
 tablero -u
 ```
 
 ```bash
-tablero -u -w 5                    # 5 workers simultáneos
+tablero -u -w 12                   # más rápido (sube el riesgo de bloqueo Cloudflare)
+tablero -u -w 3                    # aún más suave si te bloquean
 tablero -u --dry-run               # solo página 1 por tienda (pruebas)
 tablero -u --sites flexo cartonazo # actualizar tiendas específicas
 ```
@@ -201,6 +210,21 @@ tablero --list --store updown            # catálogo de una tienda
 tablero --list --sort price              # ordenar por precio
 tablero --list --in-stock                # solo disponibles
 ```
+
+### Novedades (nuevos / restock)
+
+En cada `--update`, cada ítem se compara (por URL) con el snapshot anterior y se marca
+como **`new`** (URL nunca vista) o **`restock`** (estaba agotado, ahora disponible). Los
+flags se recalculan en cada actualización, así que siempre reflejan el último cambio:
+
+```bash
+tablero --new              # todos los ítems nuevos + restock de la última actualización
+tablero --new new          # solo nuevos
+tablero --new restock      # solo restock
+```
+
+Los ítems marcados también aparecen decorados con **🆕** (nuevo) o **🔄** (restock) en los
+resultados de búsqueda, en `--list` y en `--deals`.
 
 ### Sorts inteligentes
 
@@ -263,7 +287,7 @@ Cada tienda tiene su parser. Cuatro plataformas cubren la mayoría:
 WooCommerce   → <del>/<ins> para precios, clases CSS para stock
 PrestaShop    → span.regular-price / span.price, ul.product-flags
 Shopify       → varía por tema; clases en grid items
-BS-Collection → estructura custom compartida por top8/cardgame/gameofmagic
+BS-Collection → estructura custom compartida por top8/gameofmagic
 ```
 
 Los parsers comparten helpers:
@@ -361,5 +385,10 @@ def mi_tienda(html):
 
 ## Notas
 
-- El scraper espera 1 segundo entre páginas por cortesía con los servidores.
+- El scraper espera 1–2.5 s (con jitter) entre páginas por cortesía con los servidores.
 - Los precios reflejan lo que el sitio muestra; precios originales inflados artificialmente son responsabilidad de cada tienda.
+- **Cloudflare:** varias tiendas usan bot-management de Cloudflare, que es sensible a la
+  reputación de tu IP: el scraping agresivo (mucha concurrencia) la degrada y provoca más
+  bloqueos `403`/`429`. El default ya es conservador (5 workers); si aún ves "Cloudflare
+  block", baja más (`tablero --update -w 3`) y reintenta más tarde. Los bloqueos se registran y **no borran**
+  los datos previos. El scraper **no** intenta evadir Cloudflare.

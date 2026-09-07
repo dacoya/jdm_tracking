@@ -53,6 +53,7 @@ las cuatro operaciones. Cada operación también está disponible por flags.
 | `--incremental` | actualizar | Rescrapea solo tiendas obsoletas (ver `--max-age`) |
 | `--max-age H` | actualizar | Antigüedad máxima en horas para incremental (default: 24) |
 | `--leaderboard` | leaderboard | Ranking de tiendas |
+| `--new [KIND]` | novedades | Ítems marcados new/restock en la última actualización (`new` o `restock` para filtrar) |
 | `--history QUERY` | historial | Historial de precios de un juego |
 | `--alert --watch G... --threshold N [--alert-out FILE]` | alertas | Vigilancia de precios |
 
@@ -73,11 +74,12 @@ las cuatro operaciones. Cada operación también está disponible por flags.
 | `search_mode` | `search_mode(query, limit=30)` | Lista resultados rankeados con precio/tiendas/stock (tope `limit`). En la TUI se vuelve al menú con cualquier tecla (sin selección numérica) |
 | `deals_mode` | `deals_mode(store_filter, in_stock_only, lower_price, higher_price, price_range, sort_by)` | Lista los productos en oferta aplicando filtros |
 | `list_mode` | `list_mode(store_filter=None, sort_by='store', in_stock_only=False)` | Listado paginado del catálogo (opcionalmente una tienda) |
-| `update_mode` | `update_mode(workers=20, dry_run=False, site_names=None)` | Scrapea en paralelo, mergea al JSON, y registra metadata + historial + stats |
+| `update_mode` | `update_mode(workers=5, dry_run=False, site_names=None)` | Scrapea en paralelo, mergea al JSON, y registra metadata + historial + stats |
 | `incremental_update` | `incremental_update(site_names=None, max_age_hours=24, ...)` | Rescrapea solo tiendas obsoletas (nunca scrapeadas, fallidas, o > max_age) |
 | `leaderboard_mode` | `leaderboard_mode()` | Renderiza el ranking de tiendas |
 | `history_mode` | `history_mode(query)` | Muestra sparklines de precio por tienda para el juego que matchea |
 | `alerts_mode` | `alerts_mode(queries, threshold, output_file=None)` | Chequea una watchlist contra un umbral e imprime/escribe alertas |
+| `novedades_mode` | `novedades_mode(kind=None)` | Lista los ítems marcados `new` / `restock` en la última actualización (`kind` filtra) |
 | `fuzzy_search` | `fuzzy_search(query, df, score_cutoff=80)` | Inclusión `WRatio` (tolera typos) + ranking compuesto (`token_set/sort/partial` + bonos exacto/prefijo + popularidad). Agrupa variantes y devuelve dicts rankeados con `title, norm, score, n_stores, min_price, in_stock` |
 | `_relevance / _rank_boost` | — | Helpers de scoring: relevancia mezclada 0–100 y bonos de orden (exacto/prefijo/token) |
 | `print_price_table` | `print_price_table(df, norm_key, sort_by='discount')` | Renderiza la tabla de precios por tienda de un juego (agrupa variantes). Disponible pero no enganchado al flujo de búsqueda actual |
@@ -123,7 +125,7 @@ Constantes: `SORT_OPTIONS = ('discount','price','offer','original','store')`,
 | `_woo_prices / _presta_prices / _old_new_prices` | Extraen precio original/oferta del HTML de cada plataforma |
 | `_stock_flags / _stock_cls / _oos` | Determinan disponibilidad (agotado / oferta) desde clases CSS |
 | `_txt / _url / _norm / _make_session` | Helpers: texto seguro, URL absoluta, anular precio actual si == original, sesión HTTP |
-| *(≈50 parsers por tienda)* | Una función por tienda + el registro `sites` (52 entradas: `name`, `base_url`, `parser`, `pagination`, `output`) |
+| *(≈47 parsers por tienda)* | Una función por tienda + el registro `sites` (47 entradas: `name`, `base_url`, `parser`, `pagination`, `output`) |
 
 ### `paths.py` — rutas independientes del directorio
 
@@ -144,12 +146,13 @@ Constantes: `SORT_OPTIONS = ('discount','price','offer','original','store')`,
 | `analytics.py` | `smart_sort(df, by)`, `render_store_leaderboard(df)` | Sorts derivados (`value`/`scarcity`/`volatility`) y leaderboard de tiendas. `SMART_SORT_OPTIONS` |
 | `export.py` | `export_comparison(df, fmt, path=None)` | Exporta a CSV / JSON / HTML estilizado en `data/exports/` |
 | `alerts.py` | `alert_on_keywords(queries, threshold, df, output_file=None)` | Vigila juegos y emite alertas JSON cuando el mejor precio ≤ umbral |
+| `flags.py` | `flag_changes(new_df, prev_records)`, `flag_counts(df)` | Marca cada ítem `new` (URL no vista antes) o `restock` (estaba agotado, ahora disponible) comparando con el snapshot previo. Se recalcula en cada `--update`, así los flags anteriores se borran solos |
 
 ### Archivos de datos
 
 | Archivo | Generado por | Contenido |
 |---|---|---|
-| `data/products.json` | `merge_to_json` | Catálogo mergeado por tienda (fuente primaria de lectura) |
+| `data/products.json` | `merge_to_json` | Catálogo mergeado por tienda (fuente primaria de lectura); los ítems `new`/`restock` llevan un campo `flag` |
 | `data/metadata.json` | `update_mode` | Estado de scraping por tienda + stats de mercado cacheadas |
 | `data/history.json` | `update_mode` | Historial de precios (`norm\|store` → observaciones) |
 | `data/exports/` | `export_comparison` | Exportaciones bajo demanda (csv/json/html) |

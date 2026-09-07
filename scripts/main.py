@@ -28,6 +28,7 @@ import os
 import json
 import math
 import time
+import random
 import argparse
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -43,7 +44,7 @@ try:
         paginate, render_table, SORT_OPTIONS, LIST_DEAL_SORT_OPTIONS,
     )
     from .paths import JSON_PATH, resolve_output
-    from . import metadata, validation, history, stats, analytics, alerts, dedup
+    from . import metadata, validation, history, stats, analytics, alerts, dedup, flags
     from . import export as exporter
 except ImportError:
     from scrape import sites, build_url, fetch_html
@@ -52,7 +53,7 @@ except ImportError:
         paginate, render_table, SORT_OPTIONS, LIST_DEAL_SORT_OPTIONS,
     )
     from paths import JSON_PATH, resolve_output
-    import metadata, validation, history, stats, analytics, alerts, dedup
+    import metadata, validation, history, stats, analytics, alerts, dedup, flags
     import export as exporter
 
 # Smart-sort keys are accepted by --deals / --list in addition to the column sorts.
@@ -73,6 +74,22 @@ FUZZY_MATCH_THRESHOLD = 90
 # spurious substring hits (a garbage query that happens to contain a short title)
 # while keeping real typos, which score well above it.
 RELEVANCE_FLOOR = 55
+
+# Emoji markers for the new/restock flags, shown decorating result rows.
+_FLAG_MARK = {flags.FLAG_NEW: '🆕', flags.FLAG_RESTOCK: '🔄'}
+
+
+def _flag_mark(flag) -> str:
+    """Emoji marker for a flag value ('' when unflagged / absent)."""
+    return _FLAG_MARK.get(flag, '')
+
+
+def _prepend_marks(df, col):
+    """Values of df[col] with a new/restock marker prepended where the row is flagged."""
+    if 'flag' not in df.columns:
+        return list(df[col])
+    return [f"{_flag_mark(f)} {v}" if _flag_mark(f) else v
+            for f, v in zip(df['flag'], df[col])]
 
 
 def merge_to_json(results: dict, targets: list) -> None:
@@ -95,6 +112,7 @@ def merge_to_json(results: dict, targets: list) -> None:
             existing = {}
 
     target_names = {s['name'] for s in targets}
+    flag_totals = {'new': 0, 'restock': 0}
     for name, df in results.items():
         if name not in target_names or df.empty:
             continue
@@ -105,7 +123,22 @@ def merge_to_json(results: dict, targets: list) -> None:
             reasons = bad['anomaly_reason'].str.split(';').explode().value_counts().to_dict()
             print(f"  [{name}] rejected {len(bad)} invalid row(s): {reasons}")
         clean = checked[~checked['is_anomaly']].drop(columns=['is_anomaly', 'anomaly_reason'])
-        existing[name] = clean.to_dict(orient='records')
+
+        # Flag new / restock vs the store's PREVIOUS snapshot (before we overwrite it).
+        flagged = flags.flag_changes(clean, existing.get(name, []))
+        counts = flags.flag_counts(flagged)
+        flag_totals['new'] += counts['new']
+        flag_totals['restock'] += counts['restock']
+
+        # Persist only the flags that are set, to keep products.json lean.
+        records = flagged.to_dict(orient='records')
+        for r in records:
+            if r.get('flag') is None:
+                r.pop('flag', None)
+        existing[name] = records
+
+    if flag_totals['new'] or flag_totals['restock']:
+        print(f"  Novedades: {flag_totals['new']} nuevos, {flag_totals['restock']} restock")
 
     JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(JSON_PATH, 'w', encoding='utf-8') as f:
@@ -154,7 +187,7 @@ def scrape_site(site, dry_run=False, position=0):
                 pbar.set_postfix_str("dry run, page 1 only")
                 break
 
-            time.sleep(1)  # be polite
+            time.sleep(1 + random.uniform(0, 1.5))  # be polite; jitter avoids a robotic cadence
 
     df = pd.DataFrame(all_products)
 
@@ -299,6 +332,10 @@ def fuzzy_search(query, df, score_cutoff=80):
         rep = max(members, key=lambda n: _relevance(norm_query, n) + _rank_boost(norm_query, n))
         rel = _relevance(norm_query, rep)
         prices = sub['_price'][sub['_price'].notna() & (sub['_price'] > 0)]
+        # Aggregate flag: 'new' if any listing is new, else 'restock' if any restocked.
+        sub_flags = set(sub['flag'].dropna()) if 'flag' in sub.columns else set()
+        cluster_flag = (flags.FLAG_NEW if flags.FLAG_NEW in sub_flags
+                        else flags.FLAG_RESTOCK if flags.FLAG_RESTOCK in sub_flags else None)
         results.append({
             'title':     titles_by_norm[rep],
             'norm':      rep,
@@ -307,6 +344,7 @@ def fuzzy_search(query, df, score_cutoff=80):
             'n_stores':  int(sub['store'].nunique()),
             'min_price': float(prices.min()) if not prices.empty else None,
             'in_stock':  bool(sub['_in_stock'].any()),
+            'flag':      cluster_flag,
         })
 
     # Drop weak/spurious matches (lenient WRatio inclusion can let substring noise in).
@@ -343,6 +381,7 @@ def print_price_table(df, norm_key, sort_by='discount'):
         lambda x: x if pd.notnull(x) and str(x).startswith('http') else 'N/A')
     rows['stock_status'] = rows['stock_status'].fillna('Disponible')
     rows['current_price'] = rows['current_price'].fillna('-')
+    rows['store'] = _prepend_marks(rows, 'store')  # 🆕/🔄 next to a store's listing
 
     render_table(
         rows,
@@ -379,7 +418,9 @@ def search_mode(query, limit=30):
         stores = f"{r['n_stores']} tienda" + ("s" if r['n_stores'] != 1 else "")
         avail = "" if r['in_stock'] else " · agotado"
         title = (r['title'][:42] + '…') if len(r['title']) > 43 else r['title']
-        print(f"  {i:>3}. {title:<44} desde {price:>9} · {stores}{avail}  ({r['score']:.0f}%)")
+        mark = _flag_mark(r.get('flag'))
+        tail = f"  {mark}" if mark else ""
+        print(f"  {i:>3}. {title:<44} desde {price:>9} · {stores}{avail}  ({r['score']:.0f}%){tail}")
     if len(matches) > limit:
         print(f"\n  … y {len(matches) - limit} más (afina la búsqueda para verlos)")
 
@@ -485,6 +526,7 @@ def deals_mode(
         deals = sort_table(deals, by=sort_by)
 
     deals['stock_status'] = deals['stock_status'].fillna('Disponible')
+    deals['title'] = _prepend_marks(deals, 'title')  # 🆕/🔄 next to new/restocked items
     label = f"en {store_filter}" if store_filter else "en todas las tiendas"
 
     render_table(
@@ -534,6 +576,7 @@ def list_mode(store_filter=None, sort_by='store', in_stock_only=False):
         df = sort_table(df, by=sort_by)
     df['descuento']    = df.apply(lambda r: format_discount(r.get('original_price'), r.get('current_price')), axis=1)
     df['stock_status'] = df['stock_status'].fillna('Disponible')
+    df['title'] = _prepend_marks(df, 'title')  # 🆕/🔄 next to new/restocked items
 
     label = store_filter or "todas las tiendas"
     render_table(
@@ -612,7 +655,52 @@ def alerts_mode(queries, threshold, output_file=None):
         print(f"\nEscrito → {output_file}")
 
 
-def update_mode(workers=20, dry_run=False, site_names=None):
+def novedades_mode(kind=None):
+    """
+    List items flagged 'new' or 'restock' by the most recent update.
+
+    `kind` filters to 'new' or 'restock'; None shows both.
+    """
+    df = load_all_csvs()
+    if df.empty:
+        print("No hay datos. Corre el scraper primero (tablero --update).")
+        return
+    if 'flag' not in df.columns:
+        print("No hay novedades registradas. Corre 'tablero --update' para detectarlas.")
+        return
+
+    wanted = [kind] if kind else [flags.FLAG_NEW, flags.FLAG_RESTOCK]
+    nov = df[df['flag'].isin(wanted)].copy()
+    if nov.empty:
+        print("Sin novedades en la última actualización.")
+        return
+
+    nov['tipo'] = nov['flag'].map({flags.FLAG_NEW: '🆕 Nuevo', flags.FLAG_RESTOCK: '🔄 Restock'})
+    nov['descuento'] = nov.apply(
+        lambda r: format_discount(r.get('original_price'), r.get('current_price')), axis=1)
+    nov['stock_status'] = nov['stock_status'].fillna('Disponible')
+    nov = nov.sort_values(['flag', 'store', 'title'])
+
+    c = flags.flag_counts(nov)
+    render_table(
+        nov,
+        title=f"Novedades — {c['new']} nuevos, {c['restock']} restock ({len(nov)} ítems)",
+        col_order=['tipo', 'store', 'title', 'original_price', 'current_price', 'descuento', 'stock_status', 'url'],
+        col_names={
+            'tipo':           'Tipo',
+            'store':          'Tienda',
+            'title':          'Producto',
+            'original_price': 'Precio',
+            'current_price':  'Oferta',
+            'descuento':      'Descuento',
+            'stock_status':   'Disponibilidad',
+            'url':            'URL',
+        },
+    )
+    return nov
+
+
+def update_mode(workers=5, dry_run=False, site_names=None):
     """
     Scrape sites and merge the results into the JSON database.
 
@@ -678,7 +766,7 @@ def update_mode(workers=20, dry_run=False, site_names=None):
     tqdm.write(f"  Metadata + history actualizados → {metadata.METADATA_PATH.name}, {history.HISTORY_PATH.name}")
 
 
-def incremental_update(site_names=None, max_age_hours=24, workers=20, dry_run=False):
+def incremental_update(site_names=None, max_age_hours=24, workers=5, dry_run=False):
     """
     Rescrape only stores that are stale: never scraped, last scrape failed, or
     older than `max_age_hours`.  Reduces load versus a full --update.
@@ -703,9 +791,10 @@ def main():
     parser.add_argument('-u', '--update', action='store_true',
         help="Scrape all sites and update local CSVs")
 
-    parser.add_argument('-w', '--workers', type=int, default=20,
+    parser.add_argument('-w', '--workers', type=int, default=5,
         metavar='N',
-        help="Concurrent scraping threads for --update (default: 20)")
+        help="Concurrent scraping threads for --update (default: 5; "
+             "lower is gentler on Cloudflare, higher is faster)")
 
     parser.add_argument('--dry-run', action='store_true',
         help="With --update: fetch only page 1 per site")
@@ -755,6 +844,10 @@ def main():
 
     parser.add_argument('--leaderboard', action='store_true',
         help="Show the store leaderboard (cheapest overall first)")
+
+    parser.add_argument('--new', nargs='?', const='all', choices=['all', 'new', 'restock'],
+        metavar='KIND',
+        help="List items flagged new/restock in the last update (optionally 'new' or 'restock')")
 
     parser.add_argument('--history', metavar='QUERY',
         help="Show per-store price-history sparklines for a game")
@@ -808,6 +901,11 @@ def main():
     # --- leaderboard ---
     if args.leaderboard:
         leaderboard_mode()
+        return
+
+    # --- novedades (new / restock) ---
+    if args.new:
+        novedades_mode(None if args.new == 'all' else args.new)
         return
 
     # --- price history ---

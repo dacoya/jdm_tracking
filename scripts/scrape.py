@@ -24,20 +24,73 @@ def _make_session():
     ))
     s.mount("http://",  adapter)
     s.mount("https://", adapter)
-    s.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+    # Fuller, realistic browser headers — standard scraping hygiene, reduces trivial
+    # user-agent filtering. (Not a bot-detection bypass; a WAF/JS challenge still wins.)
+    s.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "es-CL,es;q=0.9,en;q=0.8",
+    })
     return s
 
 _SESSION = _make_session()
+
+# Substrings that mark a full-page anti-bot / WAF challenge INTERSTITIAL (not just a
+# widget script embedded in a normal page). Kept specific to Cloudflare/Sucuri/DataDome
+# block pages; generic tokens like "g-recaptcha" are avoided because real store pages
+# embed them in forms. Detection is further gated on page size below.
+_CHALLENGE_MARKERS = (
+    "just a moment",          # Cloudflare interstitial
+    "checking your browser",  # Cloudflare
+    "cf-chl-",                # Cloudflare challenge script
+    "/cdn-cgi/challenge",     # Cloudflare
+    "sucuri_cloudproxy",      # Sucuri WAF
+    "captcha-delivery.com",   # DataDome
+)
+
+# Challenge interstitials are tiny; real catalog pages are 100 KB+. Only treat a page
+# as a challenge when a marker appears AND the page is suspiciously small — this keeps
+# large real pages that merely reference a captcha script from false-positiving.
+_CHALLENGE_MAX_LEN = 30000
+
+def _is_cloudflare(resp) -> bool:
+    """True when a response was served by Cloudflare's edge (cf-ray / server header)."""
+    return 'cf-ray' in resp.headers or 'cloudflare' in resp.headers.get('server', '').lower()
 
 
 def fetch_html(url):
     try:
         r = _SESSION.get(url, timeout=20)
-        r.raise_for_status()
-        return BeautifulSoup(r.text, 'html.parser')
     except requests.exceptions.RequestException as e:
         print(f"Network error on {url}: {e}")
         return None
+
+    # Cloudflare bot-management: a 403/429/503 from the CF edge is a challenge or
+    # rate-limit, not a parseable page. Report it clearly and skip (existing data is
+    # preserved). Retrying the same request won't help — it needs a gentler request
+    # rate; bursty/concurrent scraping degrades the IP's reputation and causes more.
+    if r.status_code in (403, 429, 503) and _is_cloudflare(r):
+        print(f"  Cloudflare block ({r.status_code}) on {url} — skipping. "
+              f"Use fewer --workers and rerun later.")
+        return None
+
+    try:
+        r.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        print(f"Network error on {url}: {e}")
+        return None
+
+    text = r.text
+    if len(text) < _CHALLENGE_MAX_LEN:
+        low = text.lower()
+        if any(marker in low for marker in _CHALLENGE_MARKERS):
+            print(f"  Anti-bot challenge detected on {url} — skipping page (data left intact)")
+            return None
+
+    return BeautifulSoup(text, 'html.parser')
 
 
 # ── Primitive helpers ──────────────────────────────────────────────────────────
@@ -148,7 +201,7 @@ def _parse_woo_li(html, link_cls='woocommerce-LoopProduct-link',
     """
     Generic WooCommerce parser for <li class='product'> grids.
     Used by: cartonazo, mangaigames, revaruk, gatoarcano, labovedadelmago,
-             kimunaustral, laloseta, lamadriguera, ludi, playlander, tertulia.
+             laloseta, lamadriguera, tertulia, griffingames.
 
     link_cls:   CSS class for the product anchor (None = first <a href>).
     extra_oos:  callable(item) -> bool for store-specific OOS signals.
@@ -205,7 +258,7 @@ def _parse_presta(html, title_tag='h2', title_cls='product-title',
 def _parse_bs(html, item_tag='section', item_cls='grid__item', base_url=''):
     """
     Generic BS-collection parser.
-    Used by: top8, gameofmagictienda, cardgame, peakgames, wargaming.
+    Used by: top8, gameofmagictienda, peakgames, wargaming.
 
     item_tag / item_cls: container element and class for each product card.
     base_url: prepended to relative hrefs.
@@ -252,7 +305,7 @@ def _parse_product_block(html, item_tag='article', item_cls='product-block',
                           base_url=''):
     """
     Generic parser for stores using the 'product-block' card pattern.
-    Used by: vudugaming, playkingdom, juegosdelbosque, zonaxgamers.
+    Used by: vudugaming, playkingdom, zonaxgamers.
 
     Handles optional old/new price pair or single price.
     OOS detected via label text (_oos) and disabled add-to-cart button.
@@ -607,11 +660,6 @@ def gameofmagictienda(html):
     return _parse_bs(html, item_tag='section', item_cls='grid__item', base_url="https://www.gameofmagictienda.cl")
 
 
-def cardgame(html):
-    """BS-collection store. Uses div containers instead of section."""
-    return _parse_bs(html, item_tag='div', item_cls='bs-collection__product', base_url="https://www.cardgame.cl")
-
-
 def labovedadelmago(html):
     """WooCommerce generic. Extra sale via span.onsale."""
     return _parse_woo_li(
@@ -695,27 +743,9 @@ def cafe2d6(html):
 
 
 def griffingames(html):
-    res = []
-    for item in (html.find_all('div', class_='product_item--inner') if html else []):
-        try:
-            t_elem = item.find('h3', class_='product_item--title')
-            if not t_elem:
-                continue
-
-            orig, curr = _norm(*_woo_prices(item.find('span', class_='price')))
-
-            parent_cls = item.parent.get('class', []) if item.parent else []
-            btn = item.find('a', class_='button')
-            oos = 'outofstock' in parent_cls or (btn and _oos(_txt(btn)))
-            stock = "Agotado" if oos else ("Oferta" if curr or item.find('span', class_='onsale') else None)
-
-            res.append({
-                'title': _txt(t_elem), 'original_price': orig, 'current_price': curr,
-                'stock_status': stock, 'url': _url(t_elem.find('a', href=True)),
-            })
-        except Exception as e:
-            print(f"  [griffingames] skip: {e}")
-    return res
+    """WooCommerce (Astra theme). Migrated to the standard <li class='product'>
+    grid — the old custom 'product_item--inner' markup is gone."""
+    return _parse_woo_li(html, link_cls='woocommerce-LoopProduct-link')
 
 
 def playcenter(html):
@@ -935,11 +965,6 @@ def lamesadevaras(html):
     return _parse_presta(html)
 
 
-def ludi(html):
-    """WooCommerce generic implementation."""
-    return _parse_woo_li(html, link_cls='woocommerce-LoopProduct-link')
-
-
 def wargaming(html):
     """BS-collection store."""
     return _parse_bs(html, item_tag='section', item_cls='grid__item', base_url="https://www.wargaming.cl")
@@ -974,6 +999,37 @@ def darkhobbies(html):
         except Exception as e:
             print(f"  [darkhobbies] skip: {e}")
     return res
+
+def tentami(html):
+    """Shopify (Tentami). Product-card grid with h3.h4 titles and product-price spans."""
+    res = []
+    for item in (html.find_all('product-card') if html else []):
+        try:
+            t_elem = item.find('h3', class_='h4')
+            if not t_elem:
+                continue
+
+            orig, curr = None, None
+            pc = item.find('product-price')
+            if pc:
+                price_span = pc.find('span', class_='price')
+                if price_span:
+                    # Parse "CLP" suffix; tentami uses "$X.XXX CLP" format
+                    orig, curr = _norm(_txt(price_span), None)
+
+            # Product link
+            link = item.find('a', href=True)
+            url = _url(link, "https://tentami.cl") if link else None
+
+            res.append({
+                'title': _txt(t_elem), 'original_price': orig, 'current_price': curr,
+                'stock_status': None,
+                'url': url,
+            })
+        except Exception as e:
+            pass
+    return res
+
 
 def shivano(html):
     res = []
@@ -1013,11 +1069,6 @@ def shivano(html):
             print(f"  [shivano] skip: {e}")
     return res
 
-def playlander(html):
-    """WooCommerce generic implementation."""
-    return _parse_woo_li(html, link_cls='woocommerce-LoopProduct-link')
-
-
 def guildreams(html):
     res = []
     for item in (html.find_all('div', class_='bs-product') if html else []):
@@ -1046,10 +1097,7 @@ def guildreams(html):
 
 
 def _parse_product_block_simple(html, base_url):
-    """
-    Shared implementation for playkingdom and juegosdelbosque.
-    Both use identical DOM structure; only the base URL differs.
-    """
+    """Product-block grid parser (used by playkingdom)."""
     res = []
     for item in (html.find_all('article', class_='product-block') if html else []):
         try:
@@ -1080,15 +1128,6 @@ def _parse_product_block_simple(html, base_url):
 
 def playkingdom(html):
     return _parse_product_block_simple(html, "https://playkingdom.cl")
-
-
-def juegosdelbosque(html):
-    return _parse_product_block_simple(html, "https://www.juegosdelbosque.cl")
-
-
-def kimunaustral(html):
-    """WooCommerce generic implementation."""
-    return _parse_woo_li(html, link_cls='woocommerce-LoopProduct-link')
 
 
 def jugones(html):
@@ -1195,9 +1234,6 @@ def araucania(html):
             print(f"  [araucania] skip: {e}")
     return res
 
-def carontejuegosdemesa(html):
-    """WooCommerce generic implementation."""
-    return _parse_woo_li(html, link_cls='woocommerce-LoopProduct-link')
 # ── Site registry ──────────────────────────────────────────────────────────────
 #
 # pagination styles:
@@ -1226,7 +1262,6 @@ sites = [
     {'name': 'gameofmagictienda','base_url': 'https://www.gameofmagictienda.cl/collection/juegos-de-mesa',       'parser': gameofmagictienda,'pagination': 'page_param', 'output': '../data/gameofmagictienda_jdm.csv'},
     {'name': 'top8',             'base_url': 'https://www.top8.cl/collection/juegos-de-mesa',                    'parser': top8,             'pagination': 'page_param', 'output': '../data/top8_jdm.csv'},
     {'name': 'revaruk',          'base_url': 'https://revaruk.cl/product-category/juegos-de-mesa',               'parser': revaruk,          'pagination': 'woo',        'output': '../data/revaruk_jdm.csv'},
-    {'name': 'cardgame',         'base_url': 'https://www.cardgame.cl/collection/juegos-de-mesa',                'parser': cardgame,         'pagination': 'page_param', 'output': '../data/cardgame_jdm.csv'},
     {'name': 'labovedadelmago',  'base_url': 'https://www.labovedadelmago.cl/categoria-producto/juegos-de-mesa', 'parser': labovedadelmago,  'pagination': 'woo',        'output': '../data/labovedadelmago_jdm.csv'},
     {'name': 'calabozotienda',   'base_url': 'https://www.calabozotienda.cl/tienda/familia/JUEGOS%20DE%20MESA',  'parser': calabozotienda,   'pagination': 'calabozo',   'output': '../data/calabozotienda_jdm.csv'},
     {'name': 'zonaxgamers',      'base_url': 'https://zonaxgamers.cl/juegos-de-mesa',                            'parser': zonaxgamers,      'pagination': 'page_param', 'output': '../data/zonaxgamers_jdm.csv'},
@@ -1245,20 +1280,16 @@ sites = [
     {'name': 'laloseta',         'base_url': 'https://laloseta.cl/categoria-producto/juego-de-mesa',             'parser': laloseta,         'pagination': 'woo',        'output': '../data/laloseta_jdm.csv'},
     {'name': 'lamadriguera',     'base_url': 'https://tiendalamadriguera.cl/product-category/juegos-de-mesa',    'parser': lamadriguera,     'pagination': 'woo',        'output': '../data/tiendalamadriguera_jdm.csv'},
     {'name': 'lamesadevaras',    'base_url': 'https://lamesadevaras.cl/9-juegos-de-mesa',                        'parser': lamesadevaras,    'pagination': 'page_param', 'output': '../data/lamesadevaras_jdm.csv'},
-    {'name': 'ludi',             'base_url': 'https://www.ludi.cl/tienda',                                       'parser': ludi,             'pagination': 'product-page','output': '../data/ludi_jdm.csv'},
     {'name': 'wargaming',        'base_url': 'https://www.wargaming.cl/collection/juegos-de-mesa',               'parser': wargaming,        'pagination': 'page_param', 'output': '../data/wargaming_jdm.csv'},
     {'name': 'darkhobbies',      'base_url': 'https://www.darkhobbies.cl/collections/all',                       'parser': darkhobbies,      'pagination': 'shopify',    'output': '../data/darkhobbies_jdm.csv'},
     {'name': 'shivano',          'base_url': 'https://shivano.cl/12-juegos-de-mesa',                             'parser': shivano,          'pagination': 'p',          'output': '../data/shivano_jdm.csv'},
-    {'name': 'playlander',       'base_url': 'https://playlander.cl/categoria-producto/juegosdemesa',            'parser': playlander,       'pagination': 'woo',        'output': '../data/playlander_jdm.csv'},
     {'name': 'guildreams',       'base_url': 'https://www.guildreams.com/collection/juegos-de-mesa',             'parser': guildreams,       'pagination': 'page_param', 'output': '../data/guildreams_jdm.csv'},
     {'name': 'playkingdom',      'base_url': 'https://playkingdom.cl/juegos-de-mesa',                            'parser': playkingdom,      'pagination': 'page_param', 'output': '../data/playkingdom_jdm.csv'},
-    {'name': 'juegosdelbosque',  'base_url': 'https://www.juegosdelbosque.cl/categorias',                        'parser': juegosdelbosque,  'pagination': 'page_param', 'output': '../data/juegosdelbosque_jdm.csv'},
-    {'name': 'kimunaustral',     'base_url': 'https://kimunaustral.cl/shop',                                     'parser': kimunaustral,     'pagination': 'woo',        'output': '../data/kimunaustral_jdm.csv'},
     {'name': 'jugones',          'base_url': 'https://www.jugones.cl/juegos-de-mesa',                            'parser': jugones,          'pagination': 'page_param', 'output': '../data/jugones_jdm.csv'},
     {'name': 'tertulia',         'base_url': 'https://tertulia.cl/categoria-producto/juego-de-mesa',             'parser': tertulia,         'pagination': 'product-page','output': '../data/tertulia_jdm.csv'},
     {'name': 'lautarojuegos',    'base_url': 'https://www.lautarojuegos.cl/juegos-de-mesa',                      'parser': lautarojuegos,    'pagination': 'page_param', 'output': '../data/lautarojuegos_jdm.csv'},
     {'name': 'araucania',        'base_url': 'https://araucaniagaming.cl/productos/juegosdemesa',                 'parser': araucania,        'pagination': 'woo',        'output': '../data/araucania_jdm.csv'},
-    {'name': 'carontejuegosdemesa', 'base_url': 'https://carontejuegosdemesa.cl/categoria-producto/juego-de-mesa', 'parser': carontejuegosdemesa, 'pagination': 'woo', 'output': '../data/caronte_jdm.csv'}
+    {'name': 'tentami',          'base_url': 'https://tentami.cl/collections/juegos-de-mesa',                      'parser': tentami,          'pagination': 'page_param', 'output': '../data/tentami_jdm.csv'},
 ]
 
 

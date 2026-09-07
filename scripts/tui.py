@@ -15,7 +15,7 @@ try:  # installed as the `tablero` package
     from .main import (
         search_mode, deals_mode, list_mode, update_mode,
         incremental_update, leaderboard_mode, history_mode, alerts_mode,
-        ALL_SORT_OPTIONS,
+        novedades_mode, ALL_SORT_OPTIONS,
     )
     from .scrape import sites
     from . import export as exporter
@@ -23,7 +23,7 @@ except ImportError:  # run directly from scripts/
     from main import (
         search_mode, deals_mode, list_mode, update_mode,
         incremental_update, leaderboard_mode, history_mode, alerts_mode,
-        ALL_SORT_OPTIONS,
+        novedades_mode, ALL_SORT_OPTIONS,
     )
     from scrape import sites
     import export as exporter
@@ -87,14 +87,15 @@ def _offer_export(df):
     fmt = questionary.select(
         "¿Exportar resultados?",
         choices=[
-            Choice("No", value=None),
+            Choice("No", value="no"),
             Choice("CSV", value="csv"),
             Choice("JSON", value="json"),
             Choice("HTML", value="html"),
         ],
-        default="No",
+        default="no",
     ).ask()
-    if not fmt:
+    # "no" (or ESC → None) → skip; only export for a real format.
+    if fmt not in exporter.VALID_FORMATS:
         return
     path = exporter.export_comparison(df, fmt=fmt)
     print(f"Exportado ({fmt}) → {path}")
@@ -163,6 +164,20 @@ def _alert_flow():
     alerts_mode(games, threshold)
 
 
+def _novedades_flow():
+    kind = questionary.select(
+        "¿Qué novedades quieres ver?",
+        choices=[
+            Choice("Todas (nuevas + restock)", value="all"),
+            Choice("Solo nuevas", value="new"),
+            Choice("Solo restock", value="restock"),
+        ],
+    ).ask()
+    if kind is None:
+        return
+    novedades_mode(None if kind == "all" else kind)
+
+
 def _update_flow():
     scope = questionary.select(
         "¿Qué actualizar?",
@@ -190,7 +205,7 @@ def _update_flow():
     if dry_run is None:
         return
 
-    workers_raw = questionary.text("Workers concurrentes:", default="20").ask()
+    workers_raw = questionary.text("Workers concurrentes:", default="5").ask()
     if workers_raw is None:
         return
     try:
@@ -222,6 +237,7 @@ _ACTIONS = {
     "deals": _deals_flow,
     "list": _list_flow,
     "leaderboard": _leaderboard_flow,
+    "novedades": _novedades_flow,
     "history": _history_flow,
     "alert": _alert_flow,
     "update": _update_flow,
@@ -251,6 +267,7 @@ def run_tui():
                     Choice("🔍  Buscar un juego", value="search"),
                     Choice("🏷   Ver ofertas", value="deals"),
                     Choice("📋  Listar catálogo", value="list"),
+                    Choice("🆕  Novedades (nuevos / restock)", value="novedades"),
                     Choice("🏆  Leaderboard de tiendas", value="leaderboard"),
                     Choice("📈  Historial de precios", value="history"),
                     Choice("🔔  Alertas de precio", value="alert"),
