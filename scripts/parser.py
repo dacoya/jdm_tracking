@@ -25,7 +25,11 @@ EXPORT_FORMATS = ("csv", "json", "html")
 
 # Shared with the TUI so both surfaces show the same amount of data. The TUI
 # used to hardcode its own numbers (20/100/25/50) that drifted from these.
-DEFAULT_LIMIT = 50
+#
+# deals/list are unbounded: they show the whole result set and let the pager
+# handle the length. A silent 50-row cap hid most of a filtered search with no
+# indication that anything was missing.
+DEFAULT_LIMIT = None
 SEARCH_LIMIT = 20
 LEADERBOARD_LIMIT = 20
 DEFAULT_WORKERS = 5
@@ -55,7 +59,7 @@ def _add_browse_flags(p) -> None:
                    help="orden (default: discount). value/scarcity/volatility "
                         "se calculan comparando entre tiendas")
     p.add_argument("--limit", type=int, default=DEFAULT_LIMIT, metavar="N",
-                   help=f"máximo de filas (default: {DEFAULT_LIMIT})")
+                   help="máximo de filas (default: todas)")
     _add_export_flag(p)
 
 
@@ -106,8 +110,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="marcar todo como revisado a partir de ahora")
     p.add_argument("--min-pct", type=float, default=DEFAULT_MIN_DROP_PCT, metavar="N",
                    help=f"bajada mínima a reportar (default: {DEFAULT_MIN_DROP_PCT}%%)")
-    p.add_argument("--limit", type=int, default=DEFAULT_LIMIT, metavar="N",
-                   help=f"máximo de filas (default: {DEFAULT_LIMIT})")
+    p.add_argument("--limit", type=int, default=50, metavar="N",
+                   help="máximo de filas (default: 50)")
 
     p = sub.add_parser("watch", help="lista de seguimiento con precios objetivo")
     p.add_argument("action", choices=("add", "rm", "list"))

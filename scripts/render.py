@@ -149,9 +149,21 @@ def _widths(rows: list[dict], columns: list[tuple], available: int) -> list[int]
 
     for i in flexible:
         key = columns[i][0]
-        while (widths[i] < natural[i] and total() < available
-               and _ambiguous(rows, key, widths[i])):
-            widths[i] += 1
+        headroom = min(natural[i], widths[i] + available - total())
+        # Only widen when widening actually resolves the ambiguity. Over a full
+        # catalog some titles are near-identical no matter how much room they
+        # get, and growing regardless would surrender the compact layout on
+        # every long listing for no gain.
+        if headroom <= widths[i] or _ambiguous(rows, key, headroom):
+            continue
+        lo, hi = widths[i], headroom
+        while lo < hi:                      # smallest width that disambiguates
+            mid = (lo + hi) // 2
+            if _ambiguous(rows, key, mid):
+                lo = mid + 1
+            else:
+                hi = mid
+        widths[i] = lo
 
     remaining = list(flexible)
     while total() > available and remaining:

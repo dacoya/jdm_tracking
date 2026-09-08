@@ -155,3 +155,37 @@ def test_slug_is_only_used_when_it_extends_the_visible_title():
     row = derive.derive("x", _record(
         "Catan...", "https://x.cl/p/producto-12345-sin-relacion"))
     assert row["norm"] == "catan"
+
+
+# ---------------------------------------------------------------------------
+# Unbounded listings
+# ---------------------------------------------------------------------------
+
+def test_products_returns_everything_by_default(db_conn):
+    """
+    deals/list show the whole result set; the pager handles the length.
+
+    A silent 50-row cap hid most of a filtered search with no indication that
+    anything had been left out.
+    """
+    total = repo.count_products(db_conn)
+    assert len(repo.products(db_conn, limit=None)) == total
+
+
+def test_smart_sorts_are_also_unbounded(db_conn):
+    """smart_products had an unconditional LIMIT, so None used to crash it."""
+    total = repo.count_products(db_conn)
+    assert len(analytics.smart_products(db_conn, by="value", limit=None)) <= total
+    assert analytics.smart_products(db_conn, by="value", limit=None)
+
+
+def test_limit_still_caps_when_asked(db_conn):
+    assert len(repo.products(db_conn, limit=2)) == 2
+    assert len(analytics.smart_products(db_conn, by="value", limit=2)) == 2
+
+
+def test_parser_default_is_unlimited():
+    import parser as parser_mod
+    args = parser_mod.build_parser().parse_args(["deals"])
+    assert args.limit is None
+    assert parser_mod.build_parser().parse_args(["list", "--limit", "7"]).limit == 7

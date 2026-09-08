@@ -177,7 +177,6 @@ tablero-cl/
 │   ├── scrape.py     # parsers por tienda + registro de sitios
 │   ├── validation.py # rechazo de precios imposibles + atípicos
 │   ├── utils.py      # normalización de títulos y precios
-│   ├── dedup.py      # URL canónica
 │   └── paths.py      # rutas (respeta TABLERO_DATA_DIR)
 ├── tests/            # pytest
 ├── data/
@@ -259,6 +258,11 @@ tablero list --kind expansion             # juego | expansion | tcg | puzzle | a
 
 `--store` acepta coincidencias parciales: `--store carton` te dirá cuáles
 coinciden en vez de fallar con un error sin salida.
+
+`deals` y `list` muestran **todos** los resultados, no una muestra: el
+paginador se encarga del largo. Un tope silencioso de 50 filas escondía la
+mayor parte de una búsqueda filtrada sin avisar. `--limit N` acota cuando
+quieras menos.
 
 Los listados largos se abren en el paginador (`less`, o lo que indique `PAGER`).
 Al redirigir la salida —`tablero list | head`, `--export`— se escribe directo,

@@ -55,7 +55,7 @@ _SCORE = {
 }
 
 
-def smart_products(conn, by: str = "value", limit: int = 50,
+def smart_products(conn, by: str = "value", limit: int | None = None,
                    store: str = None, in_stock_only: bool = False,
                    kind=None, on_sale: bool = False,
                    min_price=None, max_price=None,
@@ -104,9 +104,12 @@ def smart_products(conn, by: str = "value", limit: int = 50,
           JOIN spread s ON s.game_id = p.game_id
          WHERE {' AND '.join(clauses)}
          ORDER BY score DESC
-         LIMIT ?
     """
-    return [dict(r) for r in conn.execute(sql, [*params, int(limit)])]
+    # limit=None means "everything", the same contract as repo.products.
+    if limit is not None:
+        sql += " LIMIT ?"
+        params = [*params, int(limit)]
+    return [dict(r) for r in conn.execute(sql, params)]
 
 
 def store_leaderboard(conn, limit: int = None) -> list[dict]:
