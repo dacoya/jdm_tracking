@@ -1,84 +1,84 @@
 """
-Price / data anomaly detection for scraped product rows.
+Price sanity checks, applied at ingest.
 
-`validate_prices` returns a copy of the DataFrame with two added columns:
-  - ``is_anomaly``     (bool)  — whether the row looks wrong
-  - ``anomaly_reason`` (str)   — ';'-joined reason codes (empty if clean)
+Stores publish impossible prices: a "sale" above the list price, a $0 listing, a
+99% discount that is really a data-entry slip. Letting those in corrupts the
+cross-store median, which in turn corrupts every derived ranking.
 
-Used by ``merge_to_json`` to reject obviously-broken rows before persisting, and
-available standalone for auditing the catalog.
+Rewritten to work on the numeric rows `derive` produces rather than on
+DataFrames of price strings.
+
+Deliberately limited to rules that are decidable from a single row. The old
+version also dropped rows more than 5 sigma from a game's median, which is not
+safe as a silent filter: the whole point of this tool is finding the one store
+selling something far below everyone else. Statistical outliers are surfaced by
+`tablero doctor` instead of being discarded.
 """
-import pandas as pd
-
-try:
-    from .utils import parse_price
-except ImportError:
-    from utils import parse_price
-
-# A discount steeper than this is almost always a scraping error, not a real sale.
 MAX_PLAUSIBLE_DISCOUNT = 0.90
 
-# How many standard deviations from a game's median price counts as an outlier.
-OUTLIER_SIGMA = 5.0
+
+def check(row: dict) -> str | None:
+    """Return a rejection reason for a derived row, or None when it is sane."""
+    original = row.get("price_original")
+    current = row.get("price_current")
+
+    if original is not None and original <= 0:
+        return "nonpositive_original"
+    if current is not None and current <= 0:
+        return "nonpositive_current"
+    if original is None and current is None:
+        return "no_price"
+    if original is not None and current is not None:
+        if current > original:
+            return "offer_above_original"
+        if original > 0 and (original - current) / original > MAX_PLAUSIBLE_DISCOUNT:
+            return "discount_over_90pct"
+    return None
 
 
-def _effective(orig: pd.Series, curr: pd.Series) -> pd.Series:
-    """Current price when present, else the original price."""
-    return curr.where(curr.notna(), orig)
-
-
-def validate_prices(df: pd.DataFrame) -> pd.DataFrame:
+def partition(rows: list) -> tuple[list, dict]:
     """
-    Flag anomalous rows. Returns a copy with ``is_anomaly`` / ``anomaly_reason``.
+    Split rows into (clean, {reason: count}).
 
-    Reason codes:
-      empty_title           — missing/blank title
-      nonpositive_original  — original price <= 0
-      nonpositive_current   — current price <= 0
-      offer_above_original  — current price > original (impossible discount)
-      discount_over_90pct   — > 90% off (probable scraping error)
-      price_outlier         — > OUTLIER_SIGMA from the median price for that game
-                              (only when a 'norm' column groups cross-store rows)
+    Counts rather than the rejected rows themselves: the caller reports totals,
+    and keeping thousands of bad rows around to print one summary line is waste.
     """
-    out = df.copy()
-    n = len(out)
-    if n == 0:
-        out["is_anomaly"] = pd.Series(dtype=bool)
-        out["anomaly_reason"] = pd.Series(dtype=object)
-        return out
+    clean, reasons = [], {}
+    for row in rows:
+        reason = check(row)
+        if reason is None:
+            clean.append(row)
+        else:
+            reasons[reason] = reasons.get(reason, 0) + 1
+    return clean, reasons
 
-    def _col(name):
-        return out[name] if name in out.columns else pd.Series([None] * n, index=out.index)
 
-    orig = _col("original_price").apply(parse_price)
-    curr = _col("current_price").apply(parse_price)
-    eff = _effective(orig, curr)
+def price_outliers(conn, sigma: float = 5.0, limit: int = 50) -> list[dict]:
+    """
+    Products far from their game's mean price -- reported, never auto-dropped.
 
-    reasons = {i: [] for i in out.index}
-
-    def _flag(mask, code):
-        for i in out.index[mask.fillna(False)]:
-            reasons[i].append(code)
-
-    title = _col("title").fillna("").astype(str).str.strip()
-    _flag(title == "", "empty_title")
-
-    _flag(orig.notna() & (orig <= 0), "nonpositive_original")
-    _flag(curr.notna() & (curr <= 0), "nonpositive_current")
-
-    both = orig.notna() & curr.notna()
-    _flag(both & (curr > orig), "offer_above_original")
-
-    discount = 1 - (curr / orig)
-    _flag(both & (orig > 0) & (discount > MAX_PLAUSIBLE_DISCOUNT), "discount_over_90pct")
-
-    # Statistical outlier — needs cross-store grouping by game (the 'norm' key).
-    if "norm" in out.columns:
-        median = eff.groupby(out["norm"]).transform("median")
-        std = eff.groupby(out["norm"]).transform("std")
-        outlier = eff.notna() & std.notna() & (std > 0) & ((eff - median).abs() > OUTLIER_SIGMA * std)
-        _flag(outlier, "price_outlier")
-
-    out["anomaly_reason"] = [";".join(reasons[i]) for i in out.index]
-    out["is_anomaly"] = out["anomaly_reason"].str.len() > 0
-    return out
+    A genuine bargain and a data error look identical here, so this is a
+    "look at these" list, not a filter.
+    """
+    sql = """
+        WITH stats AS (
+            SELECT game_id,
+                   AVG(price_eff) AS mean,
+                   COUNT(*)       AS n,
+                   AVG(price_eff * price_eff) - AVG(price_eff) * AVG(price_eff) AS var
+              FROM product
+             WHERE price_eff IS NOT NULL AND price_eff > 0
+             GROUP BY game_id
+            HAVING COUNT(*) >= 3
+        )
+        SELECT p.id AS product_id, p.store, p.title, p.url, p.price_eff,
+               s.mean, s.n,
+               ROUND(ABS(p.price_eff - s.mean) / NULLIF(SQRT(s.var), 0), 1) AS sigmas
+          FROM product p
+          JOIN stats s ON s.game_id = p.game_id
+         WHERE s.var > 0
+           AND ABS(p.price_eff - s.mean) / SQRT(s.var) > ?
+         ORDER BY sigmas DESC
+         LIMIT ?
+    """
+    return [dict(r) for r in conn.execute(sql, (float(sigma), int(limit)))]

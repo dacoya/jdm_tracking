@@ -11,3 +11,16 @@ dist/
 
 # OS
 .DS_Store
+
+# SQLite database — a 15 MB binary that changes on every scrape. Rebuild it
+# with `tablero migrate`, which reads the per-store CSVs that ARE tracked.
+# Sync it to other devices with Syncthing/Dropbox, not git.
+data/tablero.db
+data/tablero.db-wal
+data/tablero.db-shm
+
+# pytest
+.pytest_cache/
+
+# On-demand export output
+data/exports/

@@ -18,10 +18,17 @@ dependencies = [
 ]
 
 [project.scripts]
-tablero = "tablero.main:main"
+tablero = "tablero.cli:main"
 
 [tool.setuptools]
 packages = ["tablero"]
 
 [tool.setuptools.package-dir]
 tablero = "scripts"
+
+# schema.sql is read at runtime by db.init_db, so it must ship with the package.
+[tool.setuptools.package-data]
+tablero = ["schema.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

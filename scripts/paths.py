@@ -10,6 +10,7 @@ The data files live under ``<repo-root>/data/``.  Historically the code used
 Pure ``pathlib`` with no cross-module imports, so it is safe to import in both
 package mode (``tablero.paths``) and flat mode (``paths``).
 """
+import os
 from pathlib import Path
 
 # Directory containing the package source (scripts/).
@@ -19,7 +20,12 @@ PKG_DIR = Path(__file__).resolve().parent
 REPO_ROOT = PKG_DIR.parent
 
 # Data directory and the merged product database.
-DATA_DIR = REPO_ROOT / "data"
+#
+# TABLERO_DATA_DIR relocates the data root, which is what lets a sync job, a
+# scratch copy, or a test fixture run against different data without patching
+# this module.
+_ENV_DATA_DIR = os.environ.get("TABLERO_DATA_DIR", "").strip()
+DATA_DIR = Path(_ENV_DATA_DIR).expanduser().resolve() if _ENV_DATA_DIR else REPO_ROOT / "data"
 JSON_PATH = DATA_DIR / "products.json"
 
 

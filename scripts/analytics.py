@@ -1,97 +1,149 @@
 """
-Derived sorting strategies and the store leaderboard.
+Derived rankings: smart sorts and the store leaderboard.
 
-`smart_sort` ranks a result set by a computed desirability metric rather than a
-single column.  `render_store_leaderboard` gives a quick "where is it cheapest to
-buy overall" view built from per-store statistics.
+Rewritten over SQL. The previous version operated on DataFrames and re-parsed
+price strings on every row; prices are numeric on disk now, so converting them
+back into "$45.990" just to re-parse would be pure waste.
+
+SQLite has no median aggregate, so the median-per-game CTE below picks the
+middle row(s) by ROW_NUMBER and averages them -- correct for both odd and even
+counts. Median matters here rather than mean: one absurdly-priced listing should
+not redefine what a game "normally" costs.
+
+Pure: connection in, list[dict] out. Nothing prints.
 """
-import pandas as pd
-
-try:
-    from .stats import price_stats_per_store, effective_price
-except ImportError:
-    from stats import price_stats_per_store, effective_price
-
-# Sort keys handled by smart_sort (distinct from utils.SORT_OPTIONS columns).
 SMART_SORT_OPTIONS = ("value", "scarcity", "volatility")
 
+# Median effective price per game, over rows with a usable price.
+_MEDIAN_CTE = """
+    WITH priced AS (
+        SELECT id, game_id, store, price_eff, in_stock,
+               ROW_NUMBER() OVER (PARTITION BY game_id ORDER BY price_eff) AS rn,
+               COUNT(*)     OVER (PARTITION BY game_id)                    AS cnt
+          FROM product
+         WHERE price_eff IS NOT NULL AND price_eff > 0
+    ),
+    med AS (
+        SELECT game_id, AVG(price_eff) AS median
+          FROM priced
+         WHERE rn IN ((cnt + 1) / 2, (cnt + 2) / 2)
+         GROUP BY game_id
+    ),
+    spread AS (
+        SELECT game_id,
+               MIN(price_eff) AS lo,
+               MAX(price_eff) AS hi,
+               COUNT(DISTINCT store) AS n_stores
+          FROM priced
+         GROUP BY game_id
+    )
+"""
 
-def smart_sort(df: pd.DataFrame, by: str = "value") -> pd.DataFrame:
-    """
-    Sort a result set (descending desirability) by a derived metric:
+# Each smart sort scores a row; all are ordered descending by that score.
+_SCORE = {
+    # Cheap relative to the game's own median, with a bonus for being buyable.
+    "value": "((m.median - p.price_eff) / m.median) + (CASE WHEN p.in_stock THEN 0.5 ELSE 0 END)",
+    # Carried by few stores: concentrated availability.
+    "scarcity": "-s.n_stores",
+    # Wide cross-store spread: the same game costs very different amounts.
+    "volatility": "(s.hi - s.lo) / m.median",
+}
 
-      value       best deal you can actually buy — low price vs. the game's
-                  median, with an in-stock bonus
-      scarcity    available in the fewest stores (concentrated local demand)
-      volatility  largest cross-store price spread (arbitrage opportunity)
 
-    Returns a copy with helper columns removed.
-    """
+def smart_products(conn, by: str = "value", limit: int = 50,
+                   store: str = None, in_stock_only: bool = False,
+                   kind=None, on_sale: bool = False) -> list[dict]:
+    """Products ranked by a derived metric rather than a single column."""
     if by not in SMART_SORT_OPTIONS:
-        raise ValueError(f"Unknown smart-sort key '{by}'. Options: {SMART_SORT_OPTIONS}")
+        raise ValueError(
+            f"Unknown smart sort '{by}'. Options: {', '.join(SMART_SORT_OPTIONS)}")
 
-    out = df.copy()
-    if out.empty:
-        return out
+    clauses, params = ["m.median > 0"], []
+    if store:
+        clauses.append("p.store = ?")
+        params.append(store)
+    if in_stock_only:
+        clauses.append("p.in_stock = 1")
+    if on_sale:
+        clauses.append("p.price_current IS NOT NULL AND p.price_original > p.price_current")
+    if kind:
+        kinds = [kind] if isinstance(kind, str) else list(kind)
+        clauses.append(f"p.kind IN ({','.join('?' * len(kinds))})")
+        params.extend(kinds)
 
-    out["_price"] = effective_price(out)
-    valid_price = out["_price"].notna() & (out["_price"] > 0)
-    grp = out.groupby("norm")["_price"] if "norm" in out.columns else None
-
-    if by == "scarcity":
-        # Ranks whole games (by store count), so price validity doesn't matter.
-        if "norm" in out.columns:
-            out["_score"] = -out.groupby("norm")["store"].transform("nunique")
-        else:
-            out["_score"] = 0
-    elif by == "volatility":
-        if grp is not None:
-            spread = (grp.transform("max") - grp.transform("min"))
-            median = grp.transform("median").replace(0, pd.NA)
-            out["_score"] = (spread / median).fillna(0)
-        else:
-            out["_score"] = 0
-    else:  # value — only meaningful for rows with a real price; others sink last.
-        median = (grp.transform("median") if grp is not None else out["_price"]).replace(0, pd.NA)
-        rel = ((median - out["_price"]) / median).fillna(0)
-        status = (out["stock_status"] if "stock_status" in out else pd.Series([""] * len(out), index=out.index))
-        in_stock = ~status.fillna("").astype(str).str.lower().eq("agotado")
-        out["_score"] = (rel + in_stock.astype(float) * 0.5).where(valid_price)
-
-    out = out.sort_values("_score", ascending=False, na_position="last")
-    return out.drop(columns=[c for c in out.columns if c.startswith("_")])
+    sql = f"""
+        {_MEDIAN_CTE}
+        SELECT p.id AS product_id, p.store, p.title, p.url, p.game_id, p.kind,
+               p.price_original, p.price_current, p.price_eff, p.in_stock, p.flag,
+               s.n_stores, m.median,
+               CASE WHEN p.price_current IS NOT NULL AND p.price_original > 0
+                         AND p.price_original > p.price_current
+                    THEN ROUND((p.price_original - p.price_current) * 100.0
+                               / p.price_original, 1) END AS discount_pct,
+               ROUND({_SCORE[by]}, 4) AS score
+          FROM product p
+          JOIN med    m ON m.game_id = p.game_id
+          JOIN spread s ON s.game_id = p.game_id
+         WHERE {' AND '.join(clauses)}
+         ORDER BY score DESC
+         LIMIT ?
+    """
+    return [dict(r) for r in conn.execute(sql, [*params, int(limit)])]
 
 
-def render_store_leaderboard(df: pd.DataFrame, limit: int = None) -> None:
-    """Print stores ranked cheapest-overall first (by competitiveness)."""
-    stats = price_stats_per_store(df)
-    if not stats:
-        print("No hay datos para el leaderboard.")
-        return
+def store_leaderboard(conn, limit: int = None) -> list[dict]:
+    """
+    Stores ranked cheapest-first.
 
-    rows = [
-        {
-            "Tienda": store,
-            "Productos": s["n"],
-            "Precio mediano": s["median"],
-            "Descuento prom.": s["mean_discount_pct"],
-            "% Agotado": s["oos_ratio"],
-            "Competitividad": s["competitiveness"],
-        }
-        for store, s in stats.items()
-    ]
-    table = pd.DataFrame(rows).sort_values("Competitividad").reset_index(drop=True)
-    if limit:
-        table = table.head(limit)
-
-    def _clp(v):
-        return f"${v:,.0f}".replace(",", ".")
-
-    table["Precio mediano"] = table["Precio mediano"].map(_clp)
-    table["Descuento prom."] = (table["Descuento prom."] * 100).map(lambda v: f"{v:.0f}%")
-    table["% Agotado"] = (table["% Agotado"] * 100).map(lambda v: f"{v:.0f}%")
-    table["Competitividad"] = (table["Competitividad"] * 100).map(lambda v: f"{v:.0f}% más caro")
-
-    print("\n🏆  Leaderboard de tiendas — más barata primero\n")
-    print(table.to_string(index=False))
-    print("\n(\"Competitividad\" = % de juegos compartidos en que la tienda es más cara que la mediana)")
+    `competitiveness` is the share of contested games (those a store shares with
+    at least one other) where this store is priced above the cross-store median.
+    Lower is cheaper. Comparing only contested games is what stops a store
+    looking cheap merely by stocking different, cheaper products.
+    """
+    sql = f"""
+        {_MEDIAN_CTE},
+        contested AS (
+            SELECT p.store, p.price_eff, m.median
+              FROM priced p
+              JOIN med    m ON m.game_id = p.game_id
+              JOIN spread s ON s.game_id = p.game_id
+             WHERE s.n_stores > 1
+        ),
+        comp AS (
+            SELECT store,
+                   COUNT(*) AS n_contested,
+                   AVG(CASE WHEN price_eff > median THEN 1.0 ELSE 0.0 END) AS competitiveness
+              FROM contested
+             GROUP BY store
+        ),
+        totals AS (
+            SELECT store,
+                   COUNT(*) AS n,
+                   AVG(CASE WHEN in_stock = 0 THEN 1.0 ELSE 0.0 END) AS oos_ratio,
+                   AVG(CASE WHEN price_current IS NOT NULL AND price_original > 0
+                                 AND price_original > price_current
+                            THEN (price_original - price_current) / price_original
+                            ELSE 0.0 END) AS mean_discount
+              FROM product
+             GROUP BY store
+        ),
+        medians AS (
+            SELECT store, AVG(price_eff) AS median_price FROM (
+                SELECT store, price_eff,
+                       ROW_NUMBER() OVER (PARTITION BY store ORDER BY price_eff) rn,
+                       COUNT(*)     OVER (PARTITION BY store)                   cnt
+                  FROM product
+                 WHERE price_eff IS NOT NULL AND price_eff > 0
+            ) WHERE rn IN ((cnt + 1) / 2, (cnt + 2) / 2)
+            GROUP BY store
+        )
+        SELECT t.store, t.n, t.oos_ratio, t.mean_discount,
+               md.median_price, c.competitiveness, c.n_contested
+          FROM totals t
+          LEFT JOIN comp    c  ON c.store  = t.store
+          LEFT JOIN medians md ON md.store = t.store
+         WHERE t.n > 0
+         ORDER BY (c.competitiveness IS NULL), c.competitiveness, md.median_price
+    """
+    rows = [dict(r) for r in conn.execute(sql)]
+    return rows[:limit] if limit else rows

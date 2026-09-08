@@ -6,30 +6,36 @@
 
 ## ¿Qué hace?
 
-Recorre los catálogos de **+30 tiendas chilenas** de juegos de mesa, guarda los precios en CSVs locales, y te deja buscar, comparar, y filtrar ofertas directamente desde la terminal — sin abrir el navegador.
+Recorre los catálogos de **46 tiendas chilenas** de juegos de mesa, guarda todo en
+una base SQLite local, y te deja buscar, comparar y filtrar ofertas directamente
+desde la terminal — sin abrir el navegador.
 
-Corre `tablero` sin argumentos para abrir el **menú interactivo**, o pasa los flags directamente:
+Corre `tablero` sin argumentos para abrir el **menú interactivo**, o usa los
+subcomandos directamente:
 
 ```
-tablero --name "clank"
+tablero search "clank"
 ```
 ```
-Resultados para 'clank' (24 encontrados):
+Resultados para 'clank' (4 encontrados):
 
-    1. Clank             desde   $47.990 · 14 tiendas           (100%)
-    2. Clank Legacy      desde  $109.990 · 2 tiendas · agotado   (75%)
-    3. Clank Catacumbas  desde   $58.990 · 12 tiendas            (69%)
+    1. Clank                             desde    $47.990 · 14 tiendas
+    2. Clank Catacumbas                  desde    $58.990 · 12 tiendas +exp
+    3. Clank Legacy                      desde   $109.990 ·  2 tiendas · agotado
     ...
 
-Selecciona un número para ver precios (0 para volver al menú): 3
-
 Clank Catacumbas
-Tienda           Precio       Oferta       Descuento  Disponibilidad  URL
----------------  -----------  -----------  ---------  --------------  ----
-drjuegos         $49.990      $35.990      -28%       Disponible      https://...
-cartonazo        $49.990      $39.990      -20%       Disponible      https://...
-aldeajuegos      $49.990      -            -          Disponible      https://...
+Tienda      Precio   Oferta   Desc.  Disponibilidad  URL
+----------  -------  -------  -----  --------------  ---------------------------
+drjuegos    $49.990  $35.990  -28%   Disponible      https://…
+cartonazo   $49.990  $39.990  -20%   Disponible      https://…
+aldeajuegos $49.990  -        -      Disponible      https://…
 ```
+
+Además de comparar precios, sabe **qué cambió desde la última vez que miraste**,
+mantiene una **lista de seguimiento** con precios objetivo, y calcula **en qué
+combinación de tiendas conviene comprar** una lista de juegos considerando el
+costo de envío.
 
 ---
 
@@ -99,7 +105,9 @@ pip install -e .            # instala las dependencias y el comando `tablero`
 ```
 
 Tras la instalación, el comando `tablero` queda disponible desde cualquier directorio.
-Para desarrollo también puedes correr el módulo directamente: `python scripts/main.py <args>`.
+Para desarrollo también puedes correr el módulo directamente: `python scripts/cli.py <args>`.
+
+Los tests corren con `python -m pytest`.
 
 **Dependencias:**
 
@@ -117,165 +125,229 @@ questionary
 ```
 tablero-cl/
 ├── pyproject.toml    # empaquetado + comando `tablero`
-├── requirements.txt
 ├── scripts/          # paquete `tablero`
-│   ├── __init__.py
-│   ├── main.py       # CLI: modos, dispatch, pipeline de actualización
+│   ├── cli.py        # subcomandos (punto de entrada)
 │   ├── tui.py        # menú interactivo (questionary)
+│   ├── render.py     # formato de tablas para terminal
+│   │
+│   ├── db.py         # conexión SQLite + esquema
+│   ├── schema.sql    # DDL canónico
+│   ├── migrate.py    # importación única JSON → SQLite
+│   ├── ingest.py     # escritura de scrapes en la base
+│   ├── derive.py     # registro scrapeado → fila de base de datos
+│   ├── repo.py       # capa de consultas (todo el SQL vive aquí)
+│   │
+│   ├── search.py     # búsqueda FTS + ranking difuso
+│   ├── classify.py   # tipo de producto (juego/expansión/accesorio/tcg/puzzle)
+│   ├── basket.py     # optimizador de carrito multi-tienda
+│   ├── watchlist.py  # lista de seguimiento persistente
+│   ├── changes.py    # bajadas de precio desde la última revisión
+│   │
 │   ├── scrape.py     # parsers por tienda + registro de sitios
-│   ├── utils.py      # normalización, precios, ordenamiento, paginación
-│   ├── paths.py      # rutas de datos independientes del directorio
-│   ├── metadata.py   # estado por tienda + caché de stats (incremental)
-│   ├── validation.py # detección de anomalías de precio
-│   ├── history.py    # historial de precios + sparklines
+│   ├── utils.py      # normalización, precios, ordenamiento
+│   ├── paths.py      # rutas (respeta TABLERO_DATA_DIR)
 │   ├── stats.py      # estadísticas por tienda + resumen de mercado
 │   ├── analytics.py  # sorts inteligentes + leaderboard
-│   ├── dedup.py      # dedup por URL + agrupación de variantes
+│   ├── validation.py # detección de anomalías de precio
+│   ├── dedup.py      # URL canónica + agrupación de variantes
 │   ├── export.py     # exportar a csv/json/html
 │   └── alerts.py     # alertas de precio por palabra clave
-├── data/             # products.json, metadata.json, history.json, CSVs, exports/
+├── tests/            # pytest
+├── data/
+│   ├── tablero.db    # base de datos canónica (SQLite)
+│   └── *.csv         # respaldo por tienda de cada scrape
 └── README.md
 ```
+
+### La base de datos
+
+Desde esta versión el almacén canónico es **`data/tablero.db`** (SQLite), no
+`products.json`. Eso cambia tres cosas que importan:
+
+- **Los precios se guardan como números**, ya parseados. Ningún consumidor
+  necesita reimplementar el parseo de precios chilenos.
+- **La clave de comparación (`norm`) se persiste**, en vez de recalcularse en
+  memoria en cada arranque.
+- **La identidad de un producto es estable** (`tienda` + URL canónica), que es
+  lo que hace que el historial de precios y las marcas nuevo/restock signifiquen
+  algo entre ejecuciones.
+
+Como efecto secundario, el archivo se puede leer tal cual desde cualquier
+cliente SQLite — incluida una app Android vía Room — sin capa de traducción.
+
+`TABLERO_DATA_DIR` permite mover el directorio de datos sin tocar el código.
 
 ---
 
 ## Uso
 
-### Modo interactivo
+El comando usa **subcomandos**. Corre `tablero` sin argumentos para el menú
+interactivo, o `tablero <comando> --help` para las opciones de cada uno.
 
-Corre el comando sin argumentos para navegar con flechas — elige entre buscar, ver ofertas, listar el catálogo o actualizar precios, sin recordar flags:
-
-```bash
-tablero
+```
+tablero search <juego>     buscar y comparar precios
+tablero deals              productos en oferta
+tablero list               listar el catálogo
+tablero stores             tiendas cubiertas y su estado
+tablero leaderboard        ranking de tiendas (más barata primero)
+tablero history <juego>    evolución de precios con sparklines
+tablero new                qué cambió desde tu última revisión
+tablero watch              lista de seguimiento
+tablero alerts             avisos de precio (para cron)
+tablero basket             dónde comprar una lista de juegos
+tablero update             scrapear y actualizar la base
+tablero migrate            construir/reconstruir la base SQLite
+tablero doctor             estado de la base + precios atípicos
 ```
 
-Todos los flags de abajo siguen funcionando para uso directo o scripting.
-
-### Actualizar la base de datos
-
-Scraping completo en paralelo (5 workers por defecto — suave con Cloudflare):
+### Primera vez
 
 ```bash
-tablero -u
-```
-
-```bash
-tablero -u -w 12                   # más rápido (sube el riesgo de bloqueo Cloudflare)
-tablero -u -w 3                    # aún más suave si te bloquean
-tablero -u --dry-run               # solo página 1 por tienda (pruebas)
-tablero -u --sites flexo cartonazo # actualizar tiendas específicas
+tablero migrate            # construye data/tablero.db desde los JSON existentes
 ```
 
 ### Buscar un juego
 
 ```bash
-tablero --name "pandemic"
-tablero --name "catan"
-tablero --name "root"
+tablero search "catan"
+tablero search "pandemic" --first    # muestra directo la tabla de precios
+tablero search "fundas" --all-kinds  # incluye accesorios (ocultos por defecto)
 ```
 
-Los resultados se ordenan por relevancia (el juego base primero) y muestran el precio
-más bajo, en cuántas tiendas está, y disponibilidad. Escribe el número de un resultado
-para ver sus precios por tienda, o `0` para volver al menú principal.
+Los resultados se ordenan por relevancia y toleran errores de tipeo
+(`pandemc` → `Pandemic`, `terraformin` → `Terraforming Mars`). Cada resultado
+muestra el precio más bajo, en cuántas tiendas está, y si hay stock.
 
-Cada resultado muestra el **precio más bajo**, en **cuántas tiendas** está, y si
-hay stock — y el ranking pone el juego base primero (no las expansiones ni los
-accesorios). La búsqueda ignora tildes, puntuación y sufijos de idioma, y **tolera
-errores de tipeo**:
+Los accesorios se ocultan por defecto: buscar `catan` devuelve el juego, no
+cuarenta fundas que lo mencionan en el título.
 
-| Lo que escribes | Encuentra |
-|---|---|
-| `catan` | `Catan` primero, luego ediciones y expansiones |
-| `clank catacumbas` | `Clank Catacumbas` (la expansión exacta, no el base) |
-| `pandemc` (con typo) | `Pandemic` |
-| `terraformin` (incompleto) | `Terraforming Mars` |
-
-### Ver todas las ofertas
+### Ver ofertas y catálogo
 
 ```bash
-tablero --deals                          # todas las ofertas, mayor descuento primero
-tablero --deals --sort price             # más baratas primero
-tablero --deals --store cartonazo        # una tienda específica
-tablero --deals --in-stock               # solo disponibles
-tablero --deals --price 10000:50000      # rango de precio (oferta)
-tablero --deals --lower-price 20000      # precio mínimo
-tablero --deals --higher-price 40000     # precio máximo
+tablero deals --in-stock --sort discount
+tablero deals --store cartonazo --max-price 30000
+tablero list --store updown --sort price
+tablero list --kind expansion             # juego | expansion | tcg | puzzle | accessory
 ```
 
-### Listar catálogo completo
+`--store` acepta coincidencias parciales: `--store carton` te dirá cuáles
+coinciden en vez de fallar con un error sin salida.
+
+### Órdenes derivados
+
+Además de `discount/price/price_desc/store/title`, `deals` y `list` aceptan tres
+órdenes que se calculan comparando entre tiendas, no leyendo una sola columna:
 
 ```bash
-tablero --list                           # todos los productos
-tablero --list --store updown            # catálogo de una tienda
-tablero --list --sort price              # ordenar por precio
-tablero --list --in-stock                # solo disponibles
+tablero deals --sort value        # más barato respecto a su propia mediana
+tablero deals --sort scarcity     # disponible en pocas tiendas
+tablero deals --sort volatility   # mayor diferencia de precio entre tiendas
 ```
 
-### Novedades (nuevos / restock)
+`value` es el más útil en la práctica: encuentra el juego que una tienda vende
+muy por debajo de lo que cobran las demás, que no es lo mismo que el mayor
+descuento nominal.
 
-En cada `--update`, cada ítem se compara (por URL) con el snapshot anterior y se marca
-como **`new`** (URL nunca vista) o **`restock`** (estaba agotado, ahora disponible). Los
-flags se recalculan en cada actualización, así que siempre reflejan el último cambio:
+### Exportar
 
-```bash
-tablero --new              # todos los ítems nuevos + restock de la última actualización
-tablero --new new          # solo nuevos
-tablero --new restock      # solo restock
-```
-
-Los ítems marcados también aparecen decorados con **🆕** (nuevo) o **🔄** (restock) en los
-resultados de búsqueda, en `--list` y en `--deals`.
-
-### Sorts inteligentes
-
-`--deals` y `--list` aceptan, además de `discount/price/offer`, tres órdenes derivados:
+Cualquier listado se puede escribir a `data/exports/`:
 
 ```bash
-tablero --deals --sort value             # mejor relación precio/stock (la mejor compra real)
-tablero --deals --sort scarcity          # juegos en pocas tiendas (demanda concentrada)
-tablero --deals --sort volatility        # mayor variación entre tiendas (arbitraje)
+tablero deals --in-stock --export csv
+tablero list --store updown --export html
+tablero leaderboard --export json
 ```
 
 ### Leaderboard de tiendas
 
 ```bash
-tablero --leaderboard                    # ranking: más barata, mejor descuento, más stock
+tablero leaderboard --limit 20
 ```
+
+Ordena las tiendas por **competitividad**: el porcentaje de juegos *disputados*
+(los que comparte con al menos otra tienda) en que esa tienda cobra más que la
+mediana. Comparar solo lo disputado es lo que evita que una tienda parezca
+barata por vender productos distintos y más baratos.
 
 ### Historial de precios
 
-El historial se acumula en cada `--update` (en `data/history.json`):
-
 ```bash
-tablero --history "catan"                # sparklines de precio por tienda (▁▂▃▅▇)
+tablero history "catan"
+tablero history "catan" --min-points 1   # incluir tiendas con una sola observación
 ```
 
-### Alertas de precio (para cron)
+Muestra un sparkline (`▁▂▃▅▇`) por tienda con el precio inicial, el final y el
+rango. Por defecto oculta las tiendas con una sola observación: un punto es un
+precio, no una tendencia, y dibujarlo como línea plana sugiere una estabilidad
+que nunca se midió. El historial se acumula con cada `tablero update`.
+
+### Avisos de precio (para cron)
 
 ```bash
-tablero --alert --watch "wingspan" "root" --threshold 30000 --alert-out alertas.json
+tablero alerts                                        # usa la lista de seguimiento
+tablero alerts --watch "wingspan" "root" --threshold 30000
+tablero alerts --out alertas.json --in-stock
 ```
 
-### Exportar resultados
+Sin argumentos usa los precios objetivo que ya guardaste con `tablero watch`, así
+que una tarea programada no necesita repetir nada ni puede quedar desincronizada
+de lo que realmente querías. Devuelve código de salida `1` cuando no hay avisos,
+para que cron pueda actuar según el resultado.
+
+### Qué cambió desde la última vez
 
 ```bash
-tablero --deals --in-stock --export csv  # → data/exports/*.csv (también json, html)
-tablero --list --store updown --export html
+tablero new --reset        # fija el marcador "última revisión"
+tablero new                # bajadas de precio + productos nuevos desde entonces
+tablero new --min-pct 10   # solo bajadas de 10% o más
 ```
 
-### Actualización incremental
+A diferencia de las marcas nuevo/restock —que se recalculan en cada scrape y
+solo describen la última actualización— esto se mide contra el momento en que
+*tú* miraste por última vez, así que no se pierde nada por no haber estado.
 
-Rescrapea solo las tiendas obsoletas en vez de todas — más rápido y amable con los servidores:
+### Lista de seguimiento
 
 ```bash
-tablero --update --incremental           # solo tiendas con datos de > 24h
-tablero --update --incremental --max-age 12
+tablero watch add "wingspan" --target 55000
+tablero watch list                       # marca los que alcanzaron su objetivo
+tablero watch rm "wingspan"
 ```
 
-> Cada `--update` también valida los precios (rechaza ofertas > original, precios ≤ 0,
-> descuentos > 90 %, títulos vacíos) y registra metadata por tienda en `data/metadata.json`.
+### Dónde comprar (optimizador de carrito)
+
+Comprar cada juego donde está más barato suele *no* ser lo más barato: cada
+tienda extra agrega un envío. Este comando compara las tres estrategias:
+
+```bash
+tablero basket "catan" "wingspan" "azul"
+tablero basket --from-watchlist --shipping 5000
+```
+
+```
+  Cada juego en su tienda más barata   5 tienda(s)  $174.960 + envío $20.000 = $194.960
+  Todo en una sola tienda              1 tienda(s)  $178.960 + envío  $4.000 = $182.960 · faltan 1
+  Combinación óptima                   3 tienda(s)  $177.960 + envío $12.000 = $189.960 ←  MEJOR
+```
+
+Un pedido completo gana sobre uno más barato pero incompleto.
+
+### Actualizar precios
+
+```bash
+tablero update                          # todas las tiendas, 5 workers
+tablero update --incremental            # solo las obsoletas (> 24 h)
+tablero update --sites tertulia top8    # tiendas específicas
+tablero update --dry-run                # solo la primera página (pruebas)
+tablero update -w 3                     # más suave si Cloudflare bloquea
+```
+
+Cada tienda se escribe por separado, así que un scrape fallido nunca borra los
+datos de otra. Un scrape vacío se trata como fallo: una caída de red no debe
+parecerse a una tienda que vació su catálogo.
 
 ---
+
 
 ## Cómo funciona
 
@@ -320,17 +392,27 @@ El pipeline de normalización:
 5. Reemplaza puntuación con espacio
 6. Colapsa whitespace
 
-El matching (en `fuzzy_search`, `main.py`) tiene dos etapas:
+El matching (`search.py`) tiene dos etapas, deliberadamente separadas:
 
-1. **Inclusión** — `WRatio` de rapidfuzz (combina ratio parcial + por tokens) con
-   corte 80: amplia y tolerante a errores de tipeo (`pandemc` → `Pandemic`).
-2. **Ranking** — un score compuesto `0.3·token_set + 0.4·token_sort + 0.3·partial`
-   más bonos por coincidencia exacta / prefijo, y desempate por popularidad
-   (nº de tiendas) y longitud del título. Así el juego base queda primero en vez
-   de empatar todo en 100 %.
+1. **Candidatos** — el índice FTS5 de SQLite decide qué es *plausible*. Es
+   indexado y barato, y reemplaza el escaneo completo que antes corría rapidfuzz
+   sobre cada título único en cada búsqueda.
+2. **Ranking** — rapidfuzz decide qué es *relevante*: score compuesto
+   `0.3·token_set + 0.4·token_sort + 0.3·partial`, más bonos por coincidencia
+   exacta / prefijo, una penalización por tipo de producto, y desempate por
+   popularidad (nº de tiendas) y longitud del título.
 
-Las variantes del mismo juego entre tiendas se agrupan en una sola entrada, y cada
-resultado se enriquece con el precio más bajo, el nº de tiendas y disponibilidad.
+FTS solo hace coincidencia por prefijo, así que no puede salvar un error de
+tipeo — `pandemc` no es prefijo de `pandemic`. Cuando devuelve pocos candidatos
+se cae a un escaneo difuso sobre los ~11 mil juegos (no los ~29 mil productos),
+que es lo que mantiene la tolerancia a typos sin pagar el costo en cada consulta.
+
+La penalización por tipo es lo que evita que los accesorios tapen al juego:
+buscar `catan` devuelve Catan, no las fundas que lo nombran en el título.
+
+Las variantes del mismo juego entre tiendas ya vienen agrupadas por la tabla
+`game`, y cada resultado se enriquece con el precio más bajo, el nº de tiendas y
+disponibilidad.
 
 ### Precios chilenos
 

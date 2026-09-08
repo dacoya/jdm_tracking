@@ -1,86 +1,90 @@
 """
-Keyword price monitoring for unattended (cron) use.
+Price alerts, for cron.
 
-`alert_on_keywords` scans the current catalog for a watchlist of games and emits
-an alert for any whose best (lowest) effective price is at or below a threshold.
-Designed to run periodically and append machine-readable alerts to a JSON file.
+Rewritten over the database. Two sources:
+
+    watchlist -- every watched game with a target price (the normal case)
+    ad-hoc    -- explicit queries plus one shared threshold
+
+The watchlist path is the reason this is worth having: targets are stored, so a
+scheduled run needs no arguments and cannot drift out of sync with what you
+actually told the tool you wanted.
+
+Emits the same alert shape the previous JSON-file version did, so anything
+already consuming that output keeps working.
 """
 import json
 import time
 
-import pandas as pd
-from rapidfuzz import fuzz
-
 try:
-    from .utils import normalize, parse_price
+    from . import repo, search as search_mod, watchlist as watch_mod
 except ImportError:
-    from utils import normalize, parse_price
+    import repo
+    import search as search_mod
+    import watchlist as watch_mod
 
 
-def _effective(df: pd.DataFrame) -> pd.Series:
-    n = len(df)
-    orig = (df["original_price"] if "original_price" in df else pd.Series([None] * n, index=df.index)).apply(parse_price)
-    curr = (df["current_price"] if "current_price" in df else pd.Series([None] * n, index=df.index)).apply(parse_price)
-    return curr.where(curr.notna(), orig)
+def _cheapest(conn, game_id: int, in_stock_only: bool = False):
+    """Cheapest usable offer for a game, or None."""
+    for offer in repo.game_prices(conn, game_id):
+        price = offer.get("price_eff")
+        if price is None or price <= 0:
+            continue
+        if in_stock_only and not offer.get("in_stock"):
+            continue
+        return offer
+    return None
 
 
-def alert_on_keywords(query_list, price_threshold, df, output_file=None, score_cutoff=80) -> list:
-    """
-    For each query, find the cheapest matching product and alert if it's at or
-    below the threshold.
+def _alert(game: dict, offer: dict, threshold: float, query: str) -> dict:
+    return {
+        "query": query,
+        "matched_title": game.get("title"),
+        "game_id": game.get("game_id"),
+        "store": offer["store"],
+        "price": float(offer["price_eff"]),
+        "threshold": float(threshold),
+        "url": offer.get("url"),
+        "in_stock": bool(offer.get("in_stock")),
+        "timestamp": int(time.time()),
+    }
 
-    `price_threshold` is either a single number (applies to every query) or a
-    dict mapping query -> threshold.  Returns the list of alert dicts and, if
-    `output_file` is given, writes them there as JSON.
-    """
+
+def from_watchlist(conn, in_stock_only: bool = False) -> list[dict]:
+    """Alerts for watched games at or below their stored target."""
     alerts = []
-    if df is None or df.empty or "norm" not in df.columns:
-        if output_file is not None:
-            _write(output_file, alerts)
-        return alerts
-
-    norms = df["norm"].fillna("").astype(str)
-    eff_all = _effective(df)
-    now = int(time.time())
-
-    for query in query_list:
-        qn = normalize(query)
-        threshold = price_threshold.get(query) if isinstance(price_threshold, dict) else price_threshold
-        if threshold is None:
+    for entry in watch_mod.entries(conn):
+        target = entry.get("target")
+        if not target:
             continue
-
-        scores = norms.map(lambda nrm: fuzz.token_set_ratio(qn, nrm))
-        match_mask = scores >= score_cutoff
-        if not match_mask.any():
-            continue
-
-        prices = eff_all[match_mask]
-        prices = prices[prices.notna() & (prices > 0)]
-        if prices.empty:
-            continue
-
-        best_idx = prices.idxmin()
-        best_price = float(prices.min())
-        if best_price <= float(threshold):
-            row = df.loc[best_idx]
-            alerts.append({
-                "query": query,
-                "matched_title": row.get("title"),
-                "store": row.get("store"),
-                "price": best_price,
-                "threshold": float(threshold),
-                "url": row.get("url"),
-                "timestamp": now,
-            })
-
-    if output_file is not None:
-        _write(output_file, alerts)
+        offer = _cheapest(conn, entry["game_id"], in_stock_only=in_stock_only)
+        if offer and offer["price_eff"] <= target:
+            alerts.append(_alert(
+                {"title": entry["title"], "game_id": entry["game_id"]},
+                offer, target, entry["title"],
+            ))
     return alerts
 
 
-def _write(output_file, alerts) -> None:
-    from pathlib import Path
-    p = Path(output_file)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    with open(p, "w", encoding="utf-8") as f:
+def from_queries(conn, queries, threshold: float,
+                 in_stock_only: bool = False) -> list[dict]:
+    """Alerts for ad-hoc queries sharing one threshold."""
+    if threshold is None:
+        raise ValueError("A threshold is required when alerting on queries.")
+
+    alerts = []
+    for query in queries:
+        game = search_mod.best_match(conn, query)
+        if not game:
+            continue
+        offer = _cheapest(conn, game["game_id"], in_stock_only=in_stock_only)
+        if offer and offer["price_eff"] <= threshold:
+            alerts.append(_alert(game, offer, threshold, query))
+    return alerts
+
+
+def write(alerts: list, path) -> str:
+    """Write alerts as JSON. Returns the path."""
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(alerts, f, ensure_ascii=False, indent=2)
+    return str(path)
