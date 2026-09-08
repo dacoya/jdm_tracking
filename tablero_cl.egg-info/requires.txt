@@ -1,6 +1,0 @@
-requests
-beautifulsoup4
-pandas
-rapidfuzz
-tqdm
-questionary
