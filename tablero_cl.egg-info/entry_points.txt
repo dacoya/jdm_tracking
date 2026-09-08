@@ -1,2 +1,2 @@
 [console_scripts]
-tablero = tablero.main:main
+tablero = tablero.cli:main

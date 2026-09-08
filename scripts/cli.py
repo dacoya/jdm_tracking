@@ -17,7 +17,7 @@ try:
     from . import alerts, analytics, basket as basket_mod
     from . import changes, db as db_mod, export as exporter, history
     from . import ingest as ingest_mod, migrate as migrate_mod
-    from . import render, repo, search as search_mod, validation
+    from . import paths, render, repo, search as search_mod, validation
     from . import watchlist as watch_mod
     from .classify import KIND_ORDER
 except ImportError:
@@ -30,6 +30,7 @@ except ImportError:
     import history
     import ingest as ingest_mod
     import migrate as migrate_mod
+    import paths
     import render
     import repo
     import search as search_mod
@@ -50,7 +51,9 @@ def _open_db(read_only: bool = True):
         return db_mod.connect(read_only=read_only)
     except FileNotFoundError:
         raise CommandError(
-            "No hay base de datos todavía. Ejecuta primero:  tablero migrate"
+            f"No hay base de datos en {db_mod.DB_PATH}.\n"
+            f"  Ejecuta:  tablero migrate\n"
+            f"  (el directorio de datos se puede cambiar con TABLERO_DATA_DIR)"
         )
 
 
@@ -401,11 +404,19 @@ def cmd_migrate(args) -> int:
         print(f"  seguimiento    : {report['watchlist_restored']:>7} conservados, "
               f"{report['watchlist_lost']} perdidos (el juego ya no existe)")
     print(f"\nBase de datos: {db_mod.DB_PATH}")
+    if not report["records_read"]:
+        print(
+            f"\nNo se encontraron datos en {paths.DATA_DIR}.\n"
+            f"  Copia ahí los CSV (o products.json), o apunta TABLERO_DATA_DIR\n"
+            f"  al directorio que los contiene, y vuelve a ejecutar 'tablero migrate'.\n"
+            f"  Para poblarlo desde cero:  tablero update"
+        )
     return 0
 
 
 def cmd_doctor(args) -> int:
     conn = _open_db()
+    print(f"Directorio    : {paths.DATA_DIR}")
     print(f"Base de datos : {db_mod.DB_PATH}")
     print(f"Esquema       : v{db_mod.schema_version(conn)}")
     for name, count in db_mod.table_counts(conn).items():

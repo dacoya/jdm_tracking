@@ -161,3 +161,60 @@ def test_blank_env_var_falls_back(monkeypatch):
     finally:
         monkeypatch.delenv("TABLERO_DATA_DIR", raising=False)
         importlib.reload(paths)
+
+
+def test_installed_package_does_not_write_into_site_packages(monkeypatch, tmp_path):
+    """
+    A normal `pip install` puts the package under site-packages. Writing a
+    15 MB database there would be wrong -- it is not the user's data, and a
+    reinstall would delete it -- so a non-checkout falls back to a user dir.
+    """
+    monkeypatch.delenv("TABLERO_DATA_DIR", raising=False)
+    import paths
+
+    fake_site_packages = tmp_path / "site-packages"
+    (fake_site_packages / "tablero").mkdir(parents=True)
+    monkeypatch.setattr(paths, "REPO_ROOT", fake_site_packages)
+    monkeypatch.setattr(paths, "PKG_DIR", fake_site_packages / "tablero")
+
+    resolved = paths.default_data_dir()
+    assert fake_site_packages not in resolved.parents
+    assert resolved == paths._user_data_dir()
+
+
+def test_source_checkout_still_uses_repo_data(monkeypatch, tmp_path):
+    """A checkout keeps using its tracked data/, which is what development needs."""
+    monkeypatch.delenv("TABLERO_DATA_DIR", raising=False)
+    import paths
+
+    checkout = tmp_path / "repo"
+    checkout.mkdir()
+    (checkout / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    monkeypatch.setattr(paths, "REPO_ROOT", checkout)
+
+    assert paths.default_data_dir() == checkout / "data"
+
+
+def test_env_override_beats_both(monkeypatch, tmp_path):
+    monkeypatch.setenv("TABLERO_DATA_DIR", str(tmp_path))
+    import paths
+    assert paths.default_data_dir() == tmp_path.resolve()
+
+
+def test_resolve_output_keeps_absolute_paths():
+    import paths
+    absolute = paths.Path("/tmp/somewhere/x.csv")
+    assert paths.resolve_output(absolute) == absolute
+
+
+def test_resolve_output_lands_beside_the_database_when_installed(monkeypatch, tmp_path):
+    """An installed copy must not write scraped CSVs into site-packages."""
+    import paths
+    fake_site_packages = tmp_path / "site-packages"
+    (fake_site_packages / "tablero").mkdir(parents=True)
+    monkeypatch.setattr(paths, "REPO_ROOT", fake_site_packages)
+    monkeypatch.setattr(paths, "PKG_DIR", fake_site_packages / "tablero")
+    monkeypatch.setattr(paths, "DATA_DIR", tmp_path / "userdata")
+
+    assert paths.resolve_output("../data/tienda_jdm.csv") == \
+        tmp_path / "userdata" / "tienda_jdm.csv"
