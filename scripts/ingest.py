@@ -44,28 +44,52 @@ def _ensure_games(conn, rows: list, now: int) -> dict:
         [(norm, title, kind, now) for norm, (title, kind) in best.items()],
     )
 
-    placeholders = ",".join("?" * len(norms))
+    # Joined through a temp table rather than IN (?,?,...): a large store has
+    # thousands of norms, and SQLite builds before 3.32 cap a statement at 999
+    # variables. executemany is not subject to that cap.
+    conn.execute("CREATE TEMP TABLE IF NOT EXISTS _scan_norms(norm TEXT PRIMARY KEY)")
+    conn.execute("DELETE FROM _scan_norms")
+    conn.executemany(
+        "INSERT OR IGNORE INTO _scan_norms(norm) VALUES (?)",
+        [(n,) for n in norms],
+    )
     return {
         r["norm"]: r["id"]
         for r in conn.execute(
-            f"SELECT id, norm FROM game WHERE norm IN ({placeholders})", list(norms)
+            "SELECT g.id, g.norm FROM game g JOIN _scan_norms n ON n.norm = g.norm"
         )
     }
 
 
-def _last_prices(conn, product_ids: list) -> dict:
-    """{product_id: most recent observed price}, for change detection."""
-    if not product_ids:
-        return {}
-    placeholders = ",".join("?" * len(product_ids))
-    sql = f"""
-        SELECT product_id, price FROM (
-            SELECT product_id, price,
-                   ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY ts DESC) rn
-              FROM price_obs WHERE product_id IN ({placeholders})
-        ) WHERE rn = 1
+def _flag_for(prev, row) -> str | None:
     """
-    return {r["product_id"]: r["price"] for r in conn.execute(sql, product_ids)}
+    'new' for an unseen URL, 'restock' when a known one came back into stock.
+
+    Anything else is unflagged: a flag marks a change worth surfacing, and a
+    product merely still being available is not one.
+    """
+    if prev is None:
+        return "new"
+    if not prev["in_stock"] and row["in_stock"]:
+        return "restock"
+    return None
+
+
+def _split_writes(rows: list, existing: dict, games: dict, store: str, ts: int):
+    """Partition rows into (inserts, updates) with their bound values."""
+    inserts, updates = [], []
+    for r in rows:
+        prev = existing.get(r["url_canon"])
+        payload = (
+            games.get(r["norm"]), r["title_raw"], r["title"], r["norm"], r["kind"],
+            r["price_original"], r["price_current"], r["price_eff"],
+            r["in_stock"], _flag_for(prev, r), ts,
+        )
+        if prev is None:
+            inserts.append((store, r["url_canon"], r["url"], *payload, ts))
+        else:
+            updates.append((*payload, prev["id"]))
+    return inserts, updates
 
 
 def ingest_store(conn, store: str, records: list, ts: int | None = None) -> dict:
@@ -92,25 +116,13 @@ def ingest_store(conn, store: str, records: list, ts: int | None = None) -> dict
     games = _ensure_games(conn, rows, ts)
     existing = _existing(conn, store)
 
-    inserts, updates = [], []
-    for r in rows:
-        prev = existing.get(r["url_canon"])
-        if prev is None:
-            flag = "new"
-        elif not prev["in_stock"] and r["in_stock"]:
-            flag = "restock"
-        else:
-            flag = None
+    # Clear the store's flags up front. Every row this scrape touches sets its
+    # own flag below, so whatever stays NULL is exactly what was not seen. The
+    # previous "NOT IN (every seen url)" needed one variable per product, which
+    # exceeds the 999-variable cap on SQLite builds before 3.32.
+    conn.execute("UPDATE product SET flag = NULL WHERE store = ?", (store,))
 
-        payload = (
-            games.get(r["norm"]), r["title_raw"], r["title"], r["norm"], r["kind"],
-            r["price_original"], r["price_current"], r["price_eff"],
-            r["in_stock"], flag, ts,
-        )
-        if prev is None:
-            inserts.append((store, r["url_canon"], r["url"], *payload, ts))
-        else:
-            updates.append((*payload, prev["id"]))
+    inserts, updates = _split_writes(rows, existing, games, store, ts)
 
     if inserts:
         conn.executemany(
@@ -130,15 +142,6 @@ def ingest_store(conn, store: str, records: list, ts: int | None = None) -> dict
                WHERE id=?""",
             updates,
         )
-
-    # Clear stale flags on rows this scrape did not see: a flag describes the
-    # latest change, so carrying an old one forward would misreport it.
-    seen_urls = [r["url_canon"] for r in rows]
-    placeholders = ",".join("?" * len(seen_urls))
-    conn.execute(
-        f"UPDATE product SET flag=NULL WHERE store=? AND url_canon NOT IN ({placeholders})",
-        [store, *seen_urls],
-    )
 
     _record_prices(conn, store, ts)
     conn.execute(
@@ -161,24 +164,31 @@ def _record_prices(conn, store: str, ts: int) -> None:
     """
     Append a price observation only where the price actually moved.
 
-    Collapsing repeats keeps the series meaningful and the table small -- the
-    legacy history module did the same, and without it every scrape would add
-    ~29k identical rows.
-    """
-    current = {
-        r["id"]: r["price_eff"]
-        for r in conn.execute(
-            "SELECT id, price_eff FROM product WHERE store=? AND price_eff IS NOT NULL",
-            (store,),
-        )
-    }
-    if not current:
-        return
+    Collapsing repeats keeps the series meaningful and the table small: without
+    it every scrape would add ~29k identical rows.
 
-    last = _last_prices(conn, list(current))
-    conn.executemany(
-        "INSERT OR IGNORE INTO price_obs(product_id, ts, price) VALUES (?,?,?)",
-        [(pid, ts, price) for pid, price in current.items() if last.get(pid) != price],
+    Done as one INSERT...SELECT taking three bound values, rather than reading
+    every last price into Python and writing back row by row. That also keeps
+    the statement clear of the 999-variable cap on older SQLite builds.
+    """
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO price_obs(product_id, ts, price)
+        SELECT p.id, ?, p.price_eff
+          FROM product p
+          LEFT JOIN (
+                SELECT o.product_id, o.price,
+                       ROW_NUMBER() OVER (PARTITION BY o.product_id
+                                          ORDER BY o.ts DESC) AS rn
+                  FROM price_obs o
+                  JOIN product pp ON pp.id = o.product_id
+                 WHERE pp.store = ?
+          ) last ON last.product_id = p.id AND last.rn = 1
+         WHERE p.store = ?
+           AND p.price_eff IS NOT NULL
+           AND (last.price IS NULL OR last.price != p.price_eff)
+        """,
+        (ts, store, store),
     )
 
 

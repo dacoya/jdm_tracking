@@ -15,6 +15,7 @@ series is carried over; where it is ambiguous or orphaned it is counted and
 dropped rather than arbitrarily assigned.
 """
 import json
+import sqlite3
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -128,6 +129,22 @@ def _game_rows(rows: list) -> dict:
     }
 
 
+def _read_optional(conn, sql: str) -> list:
+    """
+    Run a query, tolerating only the table being absent.
+
+    An older database legitimately may not have a table yet -- that means there
+    is nothing to preserve. Any other failure means there IS state and we could
+    not read it, which must not be mistaken for the empty case.
+    """
+    try:
+        return [dict(r) for r in conn.execute(sql)]
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).lower():
+            return []
+        raise
+
+
 def _save_personal_state(path) -> dict:
     """
     Read watchlist and cursors out of an existing database before it is replaced.
@@ -135,25 +152,26 @@ def _save_personal_state(path) -> dict:
     The catalog is regenerable from CSVs, but these rows are not: they are the
     user's own state, and a rebuild that silently dropped them would be a data
     loss bug dressed up as a migration.
+
+    Raises rather than returning empty when the database exists but cannot be
+    read. The caller deletes the file straight after this returns, so absorbing
+    an error here would destroy exactly the data this function exists to save --
+    and it would do it most often during a schema change, which is the one time
+    preservation actually matters.
     """
     if path is None or not Path(path).exists():
         return {}
-    try:
-        conn = db_mod.connect(path, read_only=True)
-    except (FileNotFoundError, Exception):
-        return {}
+
+    conn = db_mod.connect(path, read_only=True)
     try:
         return {
-            "watchlist": [
-                dict(r) for r in conn.execute(
-                    "SELECT g.norm, w.target, w.note, w.added_at FROM watchlist w "
-                    "JOIN game g ON g.id = w.game_id"
-                )
-            ],
-            "cursors": [dict(r) for r in conn.execute("SELECT name, ts FROM cursor")],
+            "watchlist": _read_optional(
+                conn,
+                "SELECT g.norm, w.target, w.note, w.added_at FROM watchlist w "
+                "JOIN game g ON g.id = w.game_id",
+            ),
+            "cursors": _read_optional(conn, "SELECT name, ts FROM cursor"),
         }
-    except Exception:
-        return {}
     finally:
         conn.close()
 
@@ -161,7 +179,7 @@ def _save_personal_state(path) -> dict:
 def _restore_personal_state(conn, state: dict) -> dict:
     """Re-attach preserved state to the rebuilt game rows."""
     if not state:
-        return {"watchlist_restored": 0, "watchlist_lost": 0}
+        return {"watchlist_found": 0, "watchlist_restored": 0, "watchlist_lost": 0}
 
     ids = {r["norm"]: r["id"] for r in conn.execute("SELECT id, norm FROM game")}
     rows = [
@@ -177,10 +195,73 @@ def _restore_personal_state(conn, state: dict) -> dict:
         [(c["name"], c["ts"]) for c in state.get("cursors", [])],
     )
     conn.commit()
+    found = len(state.get("watchlist", []))
     return {
+        "watchlist_found": found,
         "watchlist_restored": len(rows),
-        "watchlist_lost": len(state.get("watchlist", [])) - len(rows),
+        "watchlist_lost": found - len(rows),
     }
+
+
+def _load_catalog(data_dir) -> tuple[dict, str]:
+    """The {store: [records]} catalog plus which source supplied it."""
+    products = _load_json(data_dir / "products.json", {})
+    if products:
+        return products, "products.json"
+    return _load_from_csvs(data_dir), "csv"
+
+
+def _insert_stores(conn, products: dict) -> int:
+    registry = _site_registry()
+    names = sorted(set(products) | set(registry))
+    conn.executemany(
+        "INSERT OR REPLACE INTO store(name, base_url, city, active) VALUES (?, ?, NULL, ?)",
+        [(n, registry.get(n), 1 if n in registry else 0) for n in names],
+    )
+    return len(names)
+
+
+def _insert_games(conn, rows: list, now: int) -> tuple[dict, int]:
+    """Insert the game clusters; return ({norm: game_id}, count)."""
+    games = _game_rows(rows)
+    conn.executemany(
+        "INSERT OR IGNORE INTO game(norm, title, kind, created_at) VALUES (?, ?, ?, ?)",
+        [(norm, title, kind, now) for norm, (title, kind) in sorted(games.items())],
+    )
+    ids = {r["norm"]: r["id"] for r in conn.execute("SELECT id, norm FROM game")}
+    return ids, len(games)
+
+
+def _insert_products(conn, rows: list, game_ids: dict, stamps: dict, now: int) -> None:
+    conn.executemany(
+        """INSERT OR IGNORE INTO product
+           (store, url_canon, url, game_id, title_raw, title, norm, kind,
+            price_original, price_current, price_eff, in_stock, flag,
+            first_seen, last_seen)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        [
+            (
+                r["store"], r["url_canon"], r["url"], game_ids[r["norm"]],
+                r["title_raw"], r["title"], r["norm"], r["kind"],
+                r["price_original"], r["price_current"], r["price_eff"],
+                r["in_stock"], r["flag"],
+                stamps.get(r["store"], now), stamps.get(r["store"], now),
+            )
+            for r in rows
+        ],
+    )
+
+
+def _insert_scrape_runs(conn, metadata: dict) -> None:
+    conn.executemany(
+        "INSERT OR REPLACE INTO scrape_run(store, ts, n_products, success) VALUES (?,?,?,?)",
+        [
+            (name, info["last_scrape"], info.get("product_count"),
+             1 if info.get("success") else 0)
+            for name, info in (metadata.get("sites") or {}).items()
+            if isinstance(info, dict) and info.get("last_scrape")
+        ],
+    )
 
 
 def migrate(db_path=None, data_dir=None, rebuild: bool = False) -> dict:
@@ -188,7 +269,8 @@ def migrate(db_path=None, data_dir=None, rebuild: bool = False) -> dict:
     Import the catalog into SQLite. Returns a report.
 
     `rebuild` replaces an existing database (needed after a schema change).
-    Watchlist entries and read cursors are carried across.
+    Watchlist entries and read cursors are carried across; if that state exists
+    but cannot be read, this raises rather than replacing the file.
     """
     data_dir = data_dir or DATA_DIR
     now = int(time.time())
@@ -200,12 +282,7 @@ def migrate(db_path=None, data_dir=None, rebuild: bool = False) -> dict:
         for suffix in ("", "-wal", "-shm"):
             Path(str(target) + suffix).unlink(missing_ok=True)
 
-    products = _load_json(data_dir / "products.json", {})
-    source = "products.json"
-    if not products:
-        products = _load_from_csvs(data_dir)
-        source = "csv"
-
+    products, source = _load_catalog(data_dir)
     history = _load_json(data_dir / "history.json", {})
     metadata = _load_json(data_dir / "metadata.json", {})
 
@@ -216,65 +293,26 @@ def migrate(db_path=None, data_dir=None, rebuild: bool = False) -> dict:
         if (derived := derive(store, record)) is not None
     ]
     rows, rejected = validation.partition(rows)
-    skipped = sum(len(v) for v in products.values()) - len(rows)
 
     conn = db_mod.connect(db_path)
     try:
         db_mod.init_db(conn)
+        n_stores = _insert_stores(conn, products)
+        game_ids, n_games = _insert_games(conn, rows, now)
+        _insert_products(conn, rows, game_ids, _store_timestamps(metadata), now)
 
-        registry = _site_registry()
-        stamps = _store_timestamps(metadata)
-        store_names = sorted(set(products) | set(registry))
-        conn.executemany(
-            "INSERT OR REPLACE INTO store(name, base_url, city, active) VALUES (?, ?, NULL, ?)",
-            [(n, registry.get(n), 1 if n in registry else 0) for n in store_names],
-        )
-
-        games = _game_rows(rows)
-        conn.executemany(
-            "INSERT OR IGNORE INTO game(norm, title, kind, created_at) VALUES (?, ?, ?, ?)",
-            [(norm, title, kind, now) for norm, (title, kind) in sorted(games.items())],
-        )
-        game_ids = {r["norm"]: r["id"] for r in conn.execute("SELECT id, norm FROM game")}
-
-        conn.executemany(
-            """INSERT OR IGNORE INTO product
-               (store, url_canon, url, game_id, title_raw, title, norm, kind,
-                price_original, price_current, price_eff, in_stock, flag,
-                first_seen, last_seen)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            [
-                (
-                    r["store"], r["url_canon"], r["url"], game_ids[r["norm"]],
-                    r["title_raw"], r["title"], r["norm"], r["kind"],
-                    r["price_original"], r["price_current"], r["price_eff"],
-                    r["in_stock"], r["flag"],
-                    stamps.get(r["store"], now), stamps.get(r["store"], now),
-                )
-                for r in rows
-            ],
-        )
-
+        read = sum(len(v) for v in products.values())
         report = {
             "source": source,
-            "records_read": sum(len(v) for v in products.values()),
-            "records_skipped": skipped,
+            "records_read": read,
+            "records_skipped": read - len(rows),
             "rejected": rejected,
-            "stores": len(store_names),
-            "games": len(games),
+            "stores": n_stores,
+            "games": n_games,
             **_import_history(conn, history),
         }
 
-        conn.executemany(
-            "INSERT OR REPLACE INTO scrape_run(store, ts, n_products, success) VALUES (?,?,?,?)",
-            [
-                (name, info["last_scrape"], info.get("product_count"),
-                 1 if info.get("success") else 0)
-                for name, info in (metadata.get("sites") or {}).items()
-                if isinstance(info, dict) and info.get("last_scrape")
-            ],
-        )
-
+        _insert_scrape_runs(conn, metadata)
         conn.commit()
         db_mod.rebuild_fts(conn)
         report.update(_restore_personal_state(conn, preserved))

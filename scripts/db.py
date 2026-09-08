@@ -99,4 +99,10 @@ def table_counts(conn: sqlite3.Connection) -> dict:
             "ORDER BY name"
         )
     ]
-    return {n: conn.execute(f"SELECT COUNT(*) FROM {n}").fetchone()[0] for n in names}
+    # A table name cannot be a bound parameter, so it is quoted instead. The
+    # names come from sqlite_master rather than any caller, but quoting keeps
+    # the identifier inert regardless of what a file happens to contain.
+    return {
+        n: conn.execute(f'SELECT COUNT(*) FROM "{n.replace(chr(34), chr(34) * 2)}"').fetchone()[0]
+        for n in names
+    }
