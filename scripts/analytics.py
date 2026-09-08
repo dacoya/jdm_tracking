@@ -12,6 +12,11 @@ not redefine what a game "normally" costs.
 
 Pure: connection in, list[dict] out. Nothing prints.
 """
+try:
+    from . import repo
+except ImportError:
+    import repo
+
 SMART_SORT_OPTIONS = ("value", "scarcity", "volatility")
 
 # Median effective price per game, over rows with a usable price.
@@ -52,18 +57,34 @@ _SCORE = {
 
 def smart_products(conn, by: str = "value", limit: int = 50,
                    store: str = None, in_stock_only: bool = False,
-                   kind=None, on_sale: bool = False) -> list[dict]:
-    """Products ranked by a derived metric rather than a single column."""
+                   kind=None, on_sale: bool = False,
+                   min_price=None, max_price=None,
+                   include_stale: bool = False) -> list[dict]:
+    """
+    Products ranked by a derived metric rather than a single column.
+
+    Takes the same filters as `repo.products`. It previously accepted no price
+    bounds at all, so `--max-price` was silently dropped whenever a smart sort
+    was chosen and the output contradicted the flag the user had passed.
+    """
     if by not in SMART_SORT_OPTIONS:
         raise ValueError(
             f"Unknown smart sort '{by}'. Options: {', '.join(SMART_SORT_OPTIONS)}")
 
     clauses, params = ["m.median > 0"], []
+    if not include_stale:
+        clauses.append(repo.STALE_CLAUSE)
     if store:
         clauses.append("p.store = ?")
         params.append(store)
     if in_stock_only:
         clauses.append("p.in_stock = 1")
+    if min_price is not None:
+        clauses.append("p.price_eff >= ?")
+        params.append(float(min_price))
+    if max_price is not None:
+        clauses.append("p.price_eff <= ?")
+        params.append(float(max_price))
     if on_sale:
         clauses.append("p.price_current IS NOT NULL AND p.price_original > p.price_current")
     if kind:
@@ -76,10 +97,7 @@ def smart_products(conn, by: str = "value", limit: int = 50,
         SELECT p.id AS product_id, p.store, p.title, p.url, p.game_id, p.kind,
                p.price_original, p.price_current, p.price_eff, p.in_stock, p.flag,
                s.n_stores, m.median,
-               CASE WHEN p.price_current IS NOT NULL AND p.price_original > 0
-                         AND p.price_original > p.price_current
-                    THEN ROUND((p.price_original - p.price_current) * 100.0
-                               / p.price_original, 1) END AS discount_pct,
+               {repo.DISCOUNT_PCT_SQL} AS discount_pct,
                ROUND({_SCORE[by]}, 4) AS score
           FROM product p
           JOIN med    m ON m.game_id = p.game_id

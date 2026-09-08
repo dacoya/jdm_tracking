@@ -150,32 +150,35 @@ questionary
 tablero-cl/
 ├── pyproject.toml    # empaquetado + comando `tablero`
 ├── scripts/          # paquete `tablero`
-│   ├── cli.py        # subcomandos (punto de entrada)
+│   ├── cli.py        # cuerpo de cada subcomando + dispatch
+│   ├── parser.py     # declaración de argumentos (solo argparse)
 │   ├── tui.py        # menú interactivo (questionary)
-│   ├── render.py     # formato de tablas para terminal
+│   ├── render.py     # todo lo que se imprime: tablas, paginación, formato
 │   │
 │   ├── db.py         # conexión SQLite + esquema
 │   ├── schema.sql    # DDL canónico
-│   ├── migrate.py    # importación única JSON → SQLite
+│   ├── migrate.py    # construcción/reconstrucción de la base
 │   ├── ingest.py     # escritura de scrapes en la base
 │   ├── derive.py     # registro scrapeado → fila de base de datos
 │   ├── repo.py       # capa de consultas (todo el SQL vive aquí)
 │   │
 │   ├── search.py     # búsqueda FTS + ranking difuso
 │   ├── classify.py   # tipo de producto (juego/expansión/accesorio/tcg/puzzle)
+│   ├── analytics.py  # órdenes derivados + leaderboard
+│   ├── history.py    # evolución de precios + sparklines
 │   ├── basket.py     # optimizador de carrito multi-tienda
 │   ├── watchlist.py  # lista de seguimiento persistente
 │   ├── changes.py    # bajadas de precio desde la última revisión
-│   │
-│   ├── scrape.py     # parsers por tienda + registro de sitios
-│   ├── utils.py      # normalización, precios, ordenamiento
-│   ├── paths.py      # rutas (respeta TABLERO_DATA_DIR)
-│   ├── stats.py      # estadísticas por tienda + resumen de mercado
-│   ├── analytics.py  # sorts inteligentes + leaderboard
-│   ├── validation.py # detección de anomalías de precio
-│   ├── dedup.py      # URL canónica + agrupación de variantes
+│   ├── alerts.py     # avisos de precio
 │   ├── export.py     # exportar a csv/json/html
-│   └── alerts.py     # alertas de precio por palabra clave
+│   │
+│   ├── update.py     # orquestación del scraping (compartida CLI/TUI)
+│   ├── runner.py     # recorrido de páginas de una tienda
+│   ├── scrape.py     # parsers por tienda + registro de sitios
+│   ├── validation.py # rechazo de precios imposibles + atípicos
+│   ├── utils.py      # normalización de títulos y precios
+│   ├── dedup.py      # URL canónica
+│   └── paths.py      # rutas (respeta TABLERO_DATA_DIR)
 ├── tests/            # pytest
 ├── data/
 │   ├── tablero.db    # base de datos canónica (SQLite)
@@ -256,6 +259,18 @@ tablero list --kind expansion             # juego | expansion | tcg | puzzle | a
 
 `--store` acepta coincidencias parciales: `--store carton` te dirá cuáles
 coinciden en vez de fallar con un error sin salida.
+
+Los listados largos se abren en el paginador (`less`, o lo que indique `PAGER`).
+Al redirigir la salida —`tablero list | head`, `--export`— se escribe directo,
+sin paginar. `PAGER=""` desactiva la paginación.
+
+### Productos obsoletos
+
+Cuando una tienda deja de listar un producto, su fila queda con el último precio
+conocido. Esas filas se **ocultan por defecto**: si no, un producto descatalogado
+sigue apareciendo como la oferta más barata (152 juegos tenían su "desde" fijado
+por una de ellas). No se borran —el historial de precios se conserva— y
+`--include-stale` las muestra. `tablero doctor` informa cuántas hay.
 
 ### Órdenes derivados
 
@@ -415,6 +430,23 @@ El pipeline de normalización:
 4. Descompone acentos (NFKD → elimina combining marks)
 5. Reemplaza puntuación con espacio
 6. Colapsa whitespace
+
+### Qué cuenta como "el mismo juego"
+
+Los títulos se normalizan para agrupar el mismo juego entre tiendas, pero solo
+se descarta lo que de verdad no identifica nada: "Juego de Mesa" es redundante
+en una tienda de juegos de mesa, y "cooperativo" o "familiar" describen sin
+nombrar.
+
+En cambio **"Juego de Cartas", "Juego de Dados" y "Party" se conservan**: nombran
+un producto distinto, no una categoría. Al eliminarlos, "Catan" y "Catan: Juego
+de Cartas" quedaban como una sola entrada y el precio del juego de cartas
+($10.990) se anunciaba como el del juego base ($29.990). Fusionar de más inventa
+un precio equivocado; fusionar de menos solo muestra dos filas honestas.
+
+Algunas tiendas además truncan los títulos ("Terraforming Mars -..."). En esos
+casos el nombre se completa desde el slug de la URL para poder distinguirlos,
+conservando el título tal como lo escribió la tienda para mostrarlo.
 
 El matching (`search.py`) tiene dos etapas, deliberadamente separadas:
 

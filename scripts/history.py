@@ -27,11 +27,12 @@ def sparkline(values: list) -> str:
     )
 
 
-def _summarise(store: str, points: list) -> dict:
+def _summarise(store: str, label: str, points: list) -> dict:
     prices = [p["price"] for p in points]
     first, last = prices[0], prices[-1]
     return {
         "store": store,
+        "label": label,
         "first": first,
         "last": last,
         "min": min(prices),
@@ -45,29 +46,44 @@ def _summarise(store: str, points: list) -> dict:
 
 def game_trends(conn, game_id: int, min_points: int = 1) -> list[dict]:
     """
-    Per-store price trends for a game, most-moved first.
+    Price trends for a game, most-moved first, one series per listing.
 
-    `min_points` hides stores observed only once: a single point is a price, not
-    a trend, and showing it as a flat line implies stability that was never
-    measured.
+    Grouped by product, not by store. A store can list the same game more than
+    once (a reissue, a second edition, a changed URL); grouping those together
+    concatenated unrelated prices into a single line and invented a trend --
+    Terraforming Mars showed "+175%" purely from two different listings being
+    stitched end to end. Where a store does have several listings, the label
+    disambiguates them.
     """
     sql = """
-        SELECT p.store, o.ts, o.price
+        SELECT p.id AS product_id, p.store, p.title, o.ts, o.price
           FROM price_obs o
           JOIN product p ON p.id = o.product_id
          WHERE p.game_id = ?
-         ORDER BY p.store, o.ts
+         ORDER BY p.store, p.id, o.ts
     """
-    by_store: dict[str, list] = {}
+    series: dict[int, dict] = {}
     for row in conn.execute(sql, (game_id,)):
-        by_store.setdefault(row["store"], []).append(
-            {"ts": row["ts"], "price": row["price"]}
+        entry = series.setdefault(
+            row["product_id"],
+            {"store": row["store"], "title": row["title"], "points": []},
         )
+        entry["points"].append({"ts": row["ts"], "price": row["price"]})
+
+    per_store: dict[str, int] = {}
+    for entry in series.values():
+        per_store[entry["store"]] = per_store.get(entry["store"], 0) + 1
 
     trends = [
-        _summarise(store, points)
-        for store, points in by_store.items()
-        if len(points) >= min_points
+        _summarise(
+            entry["store"],
+            # Only qualify the label when it is actually ambiguous.
+            entry["store"] if per_store[entry["store"]] == 1
+            else f"{entry['store']} · {entry['title']}",
+            entry["points"],
+        )
+        for entry in series.values()
+        if len(entry["points"]) >= min_points
     ]
     trends.sort(key=lambda t: abs(t["change_pct"]), reverse=True)
     return trends

@@ -39,6 +39,65 @@ def test_clean_title_preserves_subtitle():
     assert "Juego de Cartas" in clean_title("Arkham Horror: El Juego de Cartas")
 
 
+@pytest.mark.parametrize("board, variant", [
+    ("Catan", "Catan: Juego de Cartas"),
+    ("Terraforming Mars", "Terraforming Mars Juego de Dados"),
+    ("Camel Up Edición 2.0", "Camel Up 2.0 Juego de Cartas"),
+    ("Sushi Go", "Sushi Go - Party"),
+    ("Time's Up!", "Time's Up! - Party"),
+])
+def test_product_variants_do_not_collapse_into_the_base_game(board, variant):
+    """
+    A card/dice/party edition is a different product, not a category tag.
+
+    Stripping those phrases merged them with the base game, so the variant's
+    price was advertised as the base game's -- `search catan` showed
+    "desde $10.990", the price of Catan: Juego de Cartas.
+    """
+    assert normalize(clean_title(board)) != normalize(clean_title(variant))
+
+
+@pytest.mark.parametrize("plain, qualified", [
+    ("Clank", "Clank Base"),
+    ("Clank", "Clank (juego base)"),
+    ("Catan", "Catan Base"),
+    ("Clank! Tesoros Sumergidos", "Clank! Expansión: Tesoros Sumergidos - Español"),
+    ("Clank! La maldición de la momia", "Clank! Expansión: La Maldición de la Momia"),
+])
+def test_qualifiers_that_do_not_change_the_product_are_merged(plain, qualified):
+    """
+    "Base" and a leading "Expansión:" name the same product.
+
+    Searching Clank returned "Clank", "Clank Base" and "Clank (juego base)" as
+    three separate results with different prices and store counts.
+    """
+    assert normalize(plain) == normalize(qualified)
+
+
+@pytest.mark.parametrize("a, b", [
+    ("Catan", "Catan Expansión"),          # no name follows: not the base game
+    ("Catan", "Catan Expansión Navegantes"),
+    ("Base Camp", "Camp"),                 # "Base" as part of a real name
+    ("Baseball Highlights 2045", "ball Highlights 2045"),
+])
+def test_qualifier_stripping_does_not_overreach(a, b):
+    assert normalize(a) != normalize(b)
+
+
+@pytest.mark.parametrize("raw", [
+    "Catan - Juego de Mesa",
+    "Carcassonne | Board Game",
+    "Wingspan - Juego de Mesa Familiar",
+    "Azul - Abstracto, estrategia",
+])
+def test_generic_category_noise_is_still_stripped(raw):
+    """Tautological labels and pure attributes carry no identity; drop them."""
+    cleaned = clean_title(raw)
+    assert "Juego de Mesa" not in cleaned
+    assert "Board Game" not in cleaned
+    assert cleaned == cleaned.strip(" -|,:;")
+
+
 @pytest.mark.parametrize("raw, expected", [
     ("Clank!: En las Catacumbas (En Español)", "clank en las catacumbas"),
     ("Terraforming Mars Edición Kickstarter", "terraforming mars kickstarter"),

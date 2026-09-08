@@ -10,6 +10,7 @@ Everything here is I/O plumbing only -- no business logic, no printing.
 """
 import sqlite3
 from pathlib import Path
+from urllib.parse import quote
 
 try:
     from .paths import DATA_DIR, PKG_DIR
@@ -27,32 +28,50 @@ class SchemaVersionError(RuntimeError):
     """Raised when a database was written by an incompatible schema version."""
 
 
-def _apply_pragmas(conn: sqlite3.Connection) -> None:
+def _uri_path(target: Path) -> str:
+    """Percent-encode a path for use in a sqlite3 file: URI."""
+    return quote(str(target))
+
+
+def _apply_pragmas(conn: sqlite3.Connection, read_only: bool = False) -> None:
     conn.execute("PRAGMA foreign_keys = ON")
-    # WAL lets a reader (an export job, a sync agent) work while a scrape writes.
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA synchronous = NORMAL")
+    if not read_only:
+        # WAL lets a reader (an export job, a sync agent) work while a scrape
+        # writes. Setting it on a read-only connection fails outright when the
+        # database is not already in WAL -- e.g. a copy made without its -wal
+        # sidecar -- so reads must not try.
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
 
 
-def connect(path=None, read_only: bool = False) -> sqlite3.Connection:
+def connect(path=None, read_only: bool = False,
+            create: bool = False) -> sqlite3.Connection:
     """
     Open a connection with dict-style rows and the standard PRAGMAs applied.
 
-    `read_only` opens via a file: URI so a consumer cannot accidentally write;
-    it requires the file to already exist.
+    `read_only` opens via a file: URI so a consumer cannot accidentally write.
+
+    A missing file raises FileNotFoundError unless `create` is set. sqlite3
+    happily creates an empty database on a write connection, which meant
+    `tablero watch add` on a fresh install produced a 0-byte file and then died
+    with "no such table: game" -- so creation is now something a caller has to
+    ask for, and only `migrate` does.
     """
     target = Path(path) if path is not None else DB_PATH
 
+    if not target.exists() and not create:
+        raise FileNotFoundError(f"No database at {target}")
+
     if read_only:
-        if not target.exists():
-            raise FileNotFoundError(f"No database at {target}")
-        conn = sqlite3.connect(f"file:{target}?mode=ro", uri=True)
+        # A file: URI takes the path as a URL, so ? and # would be parsed as
+        # query and fragment separators rather than as part of the filename.
+        conn = sqlite3.connect(f"file:{_uri_path(target)}?mode=ro", uri=True)
     else:
         target.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(target)
 
     conn.row_factory = sqlite3.Row
-    _apply_pragmas(conn)
+    _apply_pragmas(conn, read_only=read_only)
     return conn
 
 

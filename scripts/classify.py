@@ -39,7 +39,7 @@ _ACCESSORY = re.compile(
     r"|toploader|top\s?loader"
     r"|pinturas?|pinceles?|aer[oó]grafo|imprimaci[oó]n"
     r"|p[oó]ster|lienzo|llavero|polera|pol[eé]r[oó]n|taza\b|mochila"
-    r"|funko|figura\s+coleccionable"
+    r"|funko|figura\s+coleccionable|plush\s+toy|peluche\s+de\b"
     r")\b",
     re.IGNORECASE,
 )

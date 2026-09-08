@@ -8,7 +8,20 @@ export layer later without touching this module.
 """
 import re
 
-OUT_OF_STOCK = "agotado"
+# A product is stale when its store was scraped successfully more recently than
+# the product was last seen -- it was delisted, or its URL changed. Such rows
+# keep their last known price and would otherwise still be offered as live
+# deals; 152 games had their advertised "desde" price set by one.
+#
+# They are excluded from queries rather than deleted, so their price history
+# survives and a store that merely served a bad page recovers on the next run.
+STALE_CLAUSE = """
+    p.last_seen >= COALESCE(
+        (SELECT MAX(r.ts) FROM scrape_run r WHERE r.store = p.store AND r.success = 1),
+        p.last_seen
+    )
+"""
+
 
 # FTS5 treats a lot of punctuation as syntax. User input is reduced to bare
 # alphanumeric tokens before it ever reaches MATCH, so a stray quote or NEAR
@@ -26,7 +39,13 @@ def fts_query(text: str) -> str:
 # Games
 # ---------------------------------------------------------------------------
 
-_GAME_AGG = """
+def _game_agg(include_stale: bool = False) -> str:
+    """
+    Per-game aggregate. Stale rows are joined out by default so the advertised
+    "desde" price and store count reflect offers that actually still exist.
+    """
+    stale = "" if include_stale else f" AND {STALE_CLAUSE}"
+    return f"""
     SELECT g.id            AS game_id,
            g.norm          AS norm,
            g.title         AS title,
@@ -34,13 +53,15 @@ _GAME_AGG = """
            COUNT(DISTINCT p.store)                        AS n_stores,
            MIN(NULLIF(p.price_eff, 0))                    AS min_price,
            MAX(p.in_stock)                                AS in_stock,
-           MAX(CASE WHEN p.flag IS NOT NULL THEN 1 ELSE 0 END) AS changed
+           MAX(CASE WHEN p.flag = 'new' THEN 1 ELSE 0 END)     AS is_new,
+           MAX(CASE WHEN p.flag = 'restock' THEN 1 ELSE 0 END) AS is_restock
       FROM game g
-      JOIN product p ON p.game_id = g.id
+      JOIN product p ON p.game_id = g.id{stale}
 """
 
 
-def candidate_games(conn, query: str, pool: int = 400) -> list[dict]:
+def candidate_games(conn, query: str, pool: int = 400,
+                    include_stale: bool = False) -> list[dict]:
     """
     Games whose title matches `query`, for ranking by the caller.
 
@@ -54,7 +75,7 @@ def candidate_games(conn, query: str, pool: int = 400) -> list[dict]:
         return []
 
     sql = f"""
-        {_GAME_AGG}
+        {_game_agg(include_stale)}
          WHERE g.id IN (
                SELECT DISTINCT p2.game_id
                  FROM product_fts f
@@ -68,42 +89,33 @@ def candidate_games(conn, query: str, pool: int = 400) -> list[dict]:
     return [dict(r) for r in conn.execute(sql, (match, pool))]
 
 
-def game_by_id(conn, game_id: int) -> dict | None:
-    row = conn.execute(f"{_GAME_AGG} WHERE g.id = ? GROUP BY g.id", (game_id,)).fetchone()
-    return dict(row) if row else None
-
-
-def games_by_ids(conn, ids) -> list[dict]:
+def games_by_ids(conn, ids, include_stale: bool = False) -> list[dict]:
+    """Per-game aggregates for a set of ids."""
     ids = list(ids)
     if not ids:
         return []
     placeholders = ",".join("?" * len(ids))
-    sql = f"{_GAME_AGG} WHERE g.id IN ({placeholders}) GROUP BY g.id"
+    sql = f"{_game_agg(include_stale)} WHERE g.id IN ({placeholders}) GROUP BY g.id"
     return [dict(r) for r in conn.execute(sql, ids)]
 
 
-def game_norms(conn, kinds=None) -> list[tuple[int, str]]:
+def game_norms(conn) -> list[tuple[int, str]]:
     """
     Every (game_id, norm) pair -- the search space for typo-tolerant fallback.
 
     Kept deliberately narrow (two columns over ~11k games, not ~29k products)
     so a full fuzzy scan stays cheap when FTS cannot bridge a misspelling.
     """
-    sql = "SELECT id, norm FROM game"
-    params: list = []
-    if kinds:
-        kinds = list(kinds)
-        sql += f" WHERE kind IN ({','.join('?' * len(kinds))})"
-        params = kinds
-    return [(r[0], r[1]) for r in conn.execute(sql, params)]
+    return [(r[0], r[1]) for r in conn.execute("SELECT id, norm FROM game")]
 
 
-def game_prices(conn, game_id: int) -> list[dict]:
+def game_prices(conn, game_id: int, include_stale: bool = False) -> list[dict]:
     """Per-store offers for one game, cheapest first."""
+    stale = "" if include_stale else f" AND {STALE_CLAUSE}"
     sql = f"""
         SELECT {_PRODUCT_COLS}
           FROM product p
-         WHERE p.game_id = ?
+         WHERE p.game_id = ?{stale}
          ORDER BY (p.price_eff IS NULL), p.price_eff
     """
     return [dict(r) for r in conn.execute(sql, (game_id,))]
@@ -113,10 +125,13 @@ def game_prices(conn, game_id: int) -> list[dict]:
 # Browsing: deals and catalog
 # ---------------------------------------------------------------------------
 
+
 def _filters(store=None, in_stock_only=False, min_price=None, max_price=None,
-             on_sale=False, flag=None, kind=None):
+             on_sale=False, flag=None, kind=None, include_stale=False):
     """Compose an SQL WHERE fragment plus bound parameters."""
     clauses, params = ["1=1"], []
+    if not include_stale:
+        clauses.append(STALE_CLAUSE)
     if store:
         clauses.append("p.store = ?")
         params.append(store)
@@ -140,13 +155,19 @@ def _filters(store=None, in_stock_only=False, min_price=None, max_price=None,
     return " AND ".join(clauses), params
 
 
-_PRODUCT_COLS = """
-    p.id AS product_id, p.store, p.title, p.url, p.game_id, p.kind,
-    p.price_original, p.price_current, p.price_eff, p.in_stock, p.flag,
+# Single definition of the discount expression, shared with analytics.py so the
+# two cannot drift apart.
+DISCOUNT_PCT_SQL = """
     CASE WHEN p.price_current IS NOT NULL AND p.price_original > 0
               AND p.price_original > p.price_current
          THEN ROUND((p.price_original - p.price_current) * 100.0 / p.price_original, 1)
-    END AS discount_pct
+    END
+"""
+
+_PRODUCT_COLS = f"""
+    p.id AS product_id, p.store, p.title, p.url, p.game_id, p.kind,
+    p.price_original, p.price_current, p.price_eff, p.in_stock, p.flag,
+    {DISCOUNT_PCT_SQL} AS discount_pct
 """
 
 _ORDER_BY = {
@@ -172,6 +193,7 @@ def products(conn, sort="discount", limit=None, offset=0, **filters) -> list[dic
 
 
 def count_products(conn, **filters) -> int:
+    """Row count under the same filters `products` applies."""
     where, params = _filters(**filters)
     return conn.execute(f"SELECT COUNT(*) FROM product p WHERE {where}", params).fetchone()[0]
 
@@ -181,6 +203,7 @@ def count_products(conn, **filters) -> int:
 # ---------------------------------------------------------------------------
 
 def stores(conn, active_only: bool = False) -> list[dict]:
+    """Every store with its product counts and last scrape time."""
     sql = """
         SELECT s.name, s.base_url, s.city, s.active,
                COUNT(p.id) AS n_products,
@@ -196,10 +219,34 @@ def stores(conn, active_only: bool = False) -> list[dict]:
 
 
 def store_names(conn, active_only: bool = True) -> list[str]:
+    """Just the names, for pickers and validation."""
     sql = "SELECT name FROM store"
     if active_only:
         sql += " WHERE active = 1"
     return [r[0] for r in conn.execute(sql + " ORDER BY name")]
+
+
+def fresh_stores(conn, cutoff_ts: int) -> set[str]:
+    """Stores with a successful scrape at or after `cutoff_ts`."""
+    return {
+        r[0] for r in conn.execute(
+            "SELECT store FROM scrape_run WHERE success = 1 "
+            "GROUP BY store HAVING MAX(ts) >= ?",
+            (int(cutoff_ts),),
+        )
+    }
+
+
+def products_without_price(conn) -> int:
+    """Rows carrying no usable price -- surfaced by `tablero doctor`."""
+    return conn.execute(
+        "SELECT COUNT(*) FROM product WHERE price_eff IS NULL").fetchone()[0]
+
+
+def stale_count(conn) -> int:
+    """Products missing from their store's most recent successful scrape."""
+    return conn.execute(
+        f"SELECT COUNT(*) FROM product p WHERE NOT ({STALE_CLAUSE})").fetchone()[0]
 
 
 def resolve_store(conn, text: str) -> list[str]:
@@ -220,17 +267,3 @@ def resolve_store(conn, text: str) -> list[str]:
 # ---------------------------------------------------------------------------
 # History
 # ---------------------------------------------------------------------------
-
-def price_series(conn, game_id: int) -> dict[str, list[dict]]:
-    """Price observations for a game, grouped by store and ordered by time."""
-    sql = """
-        SELECT p.store, o.ts, o.price
-          FROM price_obs o
-          JOIN product p ON p.id = o.product_id
-         WHERE p.game_id = ?
-         ORDER BY p.store, o.ts
-    """
-    out: dict[str, list[dict]] = {}
-    for r in conn.execute(sql, (game_id,)):
-        out.setdefault(r["store"], []).append({"ts": r["ts"], "price": r["price"]})
-    return out

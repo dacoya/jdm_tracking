@@ -294,7 +294,7 @@ def migrate(db_path=None, data_dir=None, rebuild: bool = False) -> dict:
     ]
     rows, rejected = validation.partition(rows)
 
-    conn = db_mod.connect(db_path)
+    conn = db_mod.connect(db_path, create=True)
     try:
         db_mod.init_db(conn)
         n_stores = _insert_stores(conn, products)

@@ -8,18 +8,15 @@ and each command only advertises the options that apply to it.
 
 This module is a thin shell: parse, call a service, hand the result to render.
 """
-import argparse
 import sys
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
     from . import alerts, analytics, basket as basket_mod
     from . import changes, db as db_mod, export as exporter, history
-    from . import ingest as ingest_mod, migrate as migrate_mod
-    from . import paths, render, repo, search as search_mod, validation
+    from . import migrate as migrate_mod, parser as parser_mod
+    from . import paths, render, repo, search as search_mod
+    from . import update as update_mod, validation
     from . import watchlist as watch_mod
-    from .classify import KIND_ORDER
 except ImportError:
     import alerts
     import analytics
@@ -28,18 +25,17 @@ except ImportError:
     import db as db_mod
     import export as exporter
     import history
-    import ingest as ingest_mod
     import migrate as migrate_mod
+    import parser as parser_mod
     import paths
     import render
     import repo
     import search as search_mod
+    import update as update_mod
     import validation
     import watchlist as watch_mod
-    from classify import KIND_ORDER
 
-SORTS = ("discount", "price", "price_desc", "store", "title",
-         "value", "scarcity", "volatility")
+build_parser = parser_mod.build_parser
 
 
 class CommandError(RuntimeError):
@@ -74,12 +70,18 @@ def _resolve_store(conn, text):
 
 
 def _price_filters(args) -> dict:
-    """Shared price/stock/kind filters for browsing commands."""
+    """
+    Shared filters for browsing commands.
+
+    One dict feeds both `repo.products` and `analytics.smart_products`, so a
+    flag cannot apply to one sort and be silently dropped by another.
+    """
     return {
         "in_stock_only": getattr(args, "in_stock", False),
         "min_price": getattr(args, "min_price", None),
         "max_price": getattr(args, "max_price", None),
         "kind": getattr(args, "kind", None),
+        "include_stale": getattr(args, "include_stale", False),
     }
 
 
@@ -92,6 +94,7 @@ def cmd_search(args) -> int:
     hits = search_mod.search(
         conn, args.query, limit=args.limit,
         include_accessories=args.all_kinds,
+        include_stale=args.include_stale,
     )
     if not hits:
         print(f"Sin resultados para '{args.query}'.")
@@ -99,26 +102,33 @@ def cmd_search(args) -> int:
 
     render.search_results(hits, args.query)
     if args.first:
-        _show_prices(conn, hits[0])
+        _show_prices(conn, hits[0], include_stale=args.include_stale)
     return 0
 
 
-def _show_prices(conn, hit) -> None:
-    render.price_table(repo.game_prices(conn, hit["game_id"]), hit["title"])
-
-
-def _browse(conn, args, on_sale: bool) -> list[dict]:
-    """Shared fetch for deals/list, dispatching to the smart sorts when asked."""
-    store = _resolve_store(conn, args.store)
-    if args.sort in analytics.SMART_SORT_OPTIONS:
-        return analytics.smart_products(
-            conn, by=args.sort, limit=args.limit, store=store,
-            on_sale=on_sale, in_stock_only=args.in_stock, kind=args.kind,
-        )
-    return repo.products(
-        conn, sort=args.sort, limit=args.limit, on_sale=on_sale,
-        store=store, **_price_filters(args),
+def _show_prices(conn, hit, include_stale: bool = False) -> None:
+    render.price_table(
+        repo.game_prices(conn, hit["game_id"], include_stale=include_stale),
+        hit["title"],
     )
+
+
+def _browse(conn, args, on_sale: bool) -> tuple[list[dict], int]:
+    """
+    Rows for deals/list plus the total matching the SAME filters.
+
+    Returning both together is what keeps the header honest: the count used to
+    be computed with the price filters applied while the rows were fetched
+    without them, so "Catálogo (5 de 13400)" described two different populations.
+    """
+    filters = dict(_price_filters(args), store=_resolve_store(conn, args.store))
+    fetch = (analytics.smart_products if args.sort in analytics.SMART_SORT_OPTIONS
+             else repo.products)
+    key = "by" if fetch is analytics.smart_products else "sort"
+
+    rows = fetch(conn, limit=args.limit, on_sale=on_sale,
+                 **{key: args.sort}, **filters)
+    return rows, repo.count_products(conn, on_sale=on_sale, **filters)
 
 
 def _export(rows: list[dict], fmt: str) -> None:
@@ -130,20 +140,23 @@ def _export(rows: list[dict], fmt: str) -> None:
     print(f"\n  Exportado: {path}")
 
 
+def _browse_title(label: str, shown: int, total: int, sort: str) -> str:
+    more = f" de {total}" if total > shown else ""
+    return f"{label} ({shown}{more}) · orden: {sort}"
+
+
 def cmd_deals(args) -> int:
     conn = _open_db()
-    rows = _browse(conn, args, on_sale=True)
-    render.product_rows(rows, title=f"Ofertas ({len(rows)}) · orden: {args.sort}")
+    rows, total = _browse(conn, args, on_sale=True)
+    render.product_rows(rows, title=_browse_title("Ofertas", len(rows), total, args.sort))
     _export(rows, args.export)
     return 0
 
 
 def cmd_list(args) -> int:
     conn = _open_db()
-    rows = _browse(conn, args, on_sale=False)
-    store = _resolve_store(conn, args.store)
-    total = repo.count_products(conn, store=store, **_price_filters(args))
-    render.product_rows(rows, title=f"Catálogo ({len(rows)} de {total}) · orden: {args.sort}")
+    rows, total = _browse(conn, args, on_sale=False)
+    render.product_rows(rows, title=_browse_title("Catálogo", len(rows), total, args.sort))
     _export(rows, args.export)
     return 0
 
@@ -243,23 +256,7 @@ def cmd_watch(args) -> int:
     conn = _open_db(read_only=False)
 
     if args.action == "list":
-        rows = [
-            {
-                "title": e["title"],
-                "target": render.money(e["target"]),
-                "price": render.money(e["min_price"]),
-                "stores": e["n_stores"],
-                "hit": "¡SÍ!" if e["hit"] else "",
-            }
-            for e in watch_mod.entries(conn)
-        ]
-        render.table(rows, [
-            ("title", "Juego", True),
-            ("target", "Objetivo", False),
-            ("price", "Actual", False),
-            ("stores", "Tiendas", False),
-            ("hit", "Alcanzado", False),
-        ], title=f"Lista de seguimiento ({len(rows)})")
+        render.watchlist(watch_mod.entries(conn))
         return 0
 
     hit = search_mod.best_match(conn, args.query)
@@ -267,7 +264,8 @@ def cmd_watch(args) -> int:
         raise CommandError(f"Sin resultados para '{args.query}'.")
 
     if args.action == "add":
-        watch_mod.add(conn, hit["game_id"], target=args.target)
+        if not watch_mod.add(conn, hit["game_id"], target=args.target):
+            raise CommandError(f"No se pudo seguir '{hit['title']}'.")
         target = f" (objetivo {render.money(args.target)})" if args.target else ""
         print(f"Siguiendo: {hit['title']}{target}")
     else:
@@ -304,259 +302,78 @@ def cmd_basket(args) -> int:
     return 0
 
 
-def _select_sites(conn, sites, names, incremental, max_age_hours):
-    """Resolve which registry entries to scrape this run."""
-    if names:
-        wanted = {n.lower() for n in names}
-        chosen = [s for s in sites if s["name"].lower() in wanted]
-        unknown = wanted - {s["name"].lower() for s in chosen}
-        if unknown:
-            raise CommandError(f"Tienda(s) desconocida(s): {', '.join(sorted(unknown))}")
-        return chosen
-
-    if not incremental:
-        return list(sites)
-
-    cutoff = int(time.time()) - int(max_age_hours * 3600)
-    fresh = {
-        r["store"]
-        for r in conn.execute(
-            "SELECT store, MAX(ts) ts FROM scrape_run WHERE success=1 "
-            "GROUP BY store HAVING ts >= ?",
-            (cutoff,),
-        )
-    }
-    return [s for s in sites if s["name"] not in fresh]
-
-
 def cmd_update(args) -> int:
     try:
-        from .runner import scrape_site
         from .scrape import sites
     except ImportError:
-        from runner import scrape_site
         from scrape import sites
 
     conn = _open_db(read_only=False)
-    targets = _select_sites(conn, sites, args.sites, args.incremental, args.max_age)
+    try:
+        targets = update_mod.select_sites(
+            conn, sites, args.sites, args.incremental, args.max_age)
+    except update_mod.UnknownSiteError as exc:
+        raise CommandError(str(exc))
+
     if not targets:
         print("Todo al día. Nada que actualizar.")
         return 0
 
-    print(f"Actualizando {len(targets)} tienda(s) con {args.workers} workers…")
-    totals = {"ingested": 0, "new": 0, "restock": 0, "failed": 0}
-    rejected: dict = {}
-
-    # Scrape concurrently, ingest serially: a SQLite connection is not safe to
-    # share across threads, and serial writes keep the transaction simple.
-    with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = {
-            pool.submit(scrape_site, site, args.dry_run, i): site
-            for i, site in enumerate(targets)
-        }
-        for future in as_completed(futures):
-            site = futures[future]
-            try:
-                df = future.result()
-            except Exception as exc:
-                print(f"  [{site['name']}] falló: {exc}")
-                ingest_mod.record_failure(conn, site["name"])
-                totals["failed"] += 1
-                continue
-
-            records = df.to_dict("records") if df is not None and not df.empty else []
-            result = ingest_mod.ingest_store(conn, site["name"], records)
-            if result["skipped"]:
-                ingest_mod.record_failure(conn, site["name"])
-                totals["failed"] += 1
-                continue
-            for key in ("ingested", "new", "restock"):
-                totals[key] += result[key]
-            for reason, n in (result.get("rejected") or {}).items():
-                rejected[reason] = rejected.get(reason, 0) + n
-
-    ingest_mod.refresh_indexes(conn)
-    print(
-        f"\nListo: {totals['ingested']} productos · "
-        f"{totals['new']} nuevos · {totals['restock']} restock · "
-        f"{totals['failed']} tienda(s) con error"
+    print(f"Actualizando {render.plural(len(targets), 'tienda')} "
+          f"con {render.plural(args.workers, 'worker')}…")
+    totals = update_mod.update_stores(
+        conn, targets, workers=args.workers, dry_run=args.dry_run,
+        on_failure=lambda name, exc: print(f"  [{name}] falló: {exc}"),
     )
-    if rejected:
-        detail = ", ".join(f"{n} {reason}" for reason, n in sorted(rejected.items()))
-        print(f"Precios rechazados: {detail}")
+    render.update_report(totals)
     return 0
 
 
 def cmd_migrate(args) -> int:
     report = migrate_mod.migrate(rebuild=args.rebuild)
-    print("Migración completa:")
-    print(f"  productos      : {report['records_read']:>7} leídos, "
-          f"{report['records_skipped']} omitidos")
-    print(f"  juegos         : {report['games']:>7}")
-    print(f"  tiendas        : {report['stores']:>7}")
-    print(f"  historial      : {report['history_mapped']:>7} series migradas, "
-          f"{report['history_ambiguous']} ambiguas, {report['history_orphaned']} huérfanas")
-    print(f"  observaciones  : {report['observations']:>7}")
-    if report.get("rejected"):
-        detail = ", ".join(f"{n} {r}" for r, n in sorted(report["rejected"].items()))
-        print(f"  rechazados     : {detail}")
-    if report.get("watchlist_restored") or report.get("watchlist_lost"):
-        print(f"  seguimiento    : {report['watchlist_restored']:>7} conservados, "
-              f"{report['watchlist_lost']} perdidos (el juego ya no existe)")
-    print(f"\nBase de datos: {db_mod.DB_PATH}")
-    if not report["records_read"]:
-        print(
-            f"\nNo se encontraron datos en {paths.DATA_DIR}.\n"
-            f"  Copia ahí los CSV (o products.json), o apunta TABLERO_DATA_DIR\n"
-            f"  al directorio que los contiene, y vuelve a ejecutar 'tablero migrate'.\n"
-            f"  Para poblarlo desde cero:  tablero update"
-        )
+    render.migration_report(report, db_mod.DB_PATH, paths.DATA_DIR)
     return 0
 
 
 def cmd_doctor(args) -> int:
     conn = _open_db()
-    print(f"Directorio    : {paths.DATA_DIR}")
-    print(f"Base de datos : {db_mod.DB_PATH}")
-    print(f"Esquema       : v{db_mod.schema_version(conn)}")
-    for name, count in db_mod.table_counts(conn).items():
-        print(f"  {name:<14} {count:>7}")
-
-    missing = conn.execute(
-        "SELECT COUNT(*) FROM product WHERE price_eff IS NULL"
-    ).fetchone()[0]
-    print(f"\nProductos sin precio: {missing}")
-
-    span = history.observation_span(conn)
-    print(f"Observaciones       : {span['n']}")
-
-    # Reported, never auto-dropped: a real bargain and a typo look identical.
-    outliers = validation.price_outliers(conn, sigma=args.sigma, limit=args.limit)
-    if outliers:
-        print(f"\nPrecios atípicos (> {args.sigma}σ del promedio del juego) — "
-              f"revisar, no se descartan solos:")
-        render.table([
-            {"store": o["store"], "title": o["title"],
-             "price": render.money(o["price_eff"]),
-             "mean": render.money(o["mean"]),
-             "sigmas": f"{o['sigmas']}σ", "n": o["n"]}
-            for o in outliers
-        ], [("title", "Producto", True), ("store", "Tienda", False),
-            ("price", "Precio", False), ("mean", "Promedio", False),
-            ("sigmas", "Desvío", False), ("n", "Tiendas", False)])
-    cursor = changes.get_cursor(conn)
-    print(f"Última revisión     : {cursor or '(sin fijar)'}")
+    render.doctor(
+        data_dir=paths.DATA_DIR,
+        db_path=db_mod.DB_PATH,
+        version=db_mod.schema_version(conn),
+        counts=db_mod.table_counts(conn),
+        without_price=repo.products_without_price(conn),
+        stale=repo.stale_count(conn),
+        cursor=changes.get_cursor(conn),
+        outliers=validation.price_outliers(conn, sigma=args.sigma, limit=args.limit),
+        sigma=args.sigma,
+    )
     return 0
 
 
-# ---------------------------------------------------------------------------
-# Parser
-# ---------------------------------------------------------------------------
+COMMANDS = {
+    "search": cmd_search,
+    "deals": cmd_deals,
+    "list": cmd_list,
+    "stores": cmd_stores,
+    "leaderboard": cmd_leaderboard,
+    "history": cmd_history,
+    "new": cmd_new,
+    "watch": cmd_watch,
+    "alerts": cmd_alerts,
+    "basket": cmd_basket,
+    "update": cmd_update,
+    "migrate": cmd_migrate,
+    "doctor": cmd_doctor,
+}
 
-def _add_browse_flags(parser) -> None:
-    parser.add_argument("--store", metavar="NAME", help="filtrar por tienda (admite parcial)")
-    parser.add_argument("--in-stock", action="store_true", help="solo disponibles")
-    parser.add_argument("--min-price", type=float, metavar="N")
-    parser.add_argument("--max-price", type=float, metavar="N")
-    parser.add_argument("--kind", choices=KIND_ORDER, nargs="+",
-                        help="filtrar por tipo de producto")
-    parser.add_argument("--sort", choices=SORTS, default="discount",
-                        help="value/scarcity/volatility son órdenes derivados")
-    parser.add_argument("--limit", type=int, default=50)
-    parser.add_argument("--export", choices=("csv", "json", "html"), metavar="FMT",
-                        help="exportar el resultado a data/exports/")
 
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="tablero",
-        description="Comparador de precios de juegos de mesa en Chile.",
-    )
-    sub = parser.add_subparsers(dest="command")
-
-    p = sub.add_parser("search", help="buscar un juego")
-    p.add_argument("query")
-    p.add_argument("--limit", type=int, default=20)
-    p.add_argument("--first", action="store_true", help="mostrar precios del primer resultado")
-    p.add_argument("--all-kinds", action="store_true", help="incluir accesorios")
-    p.set_defaults(func=cmd_search)
-
-    p = sub.add_parser("deals", help="productos en oferta")
-    _add_browse_flags(p)
-    p.set_defaults(func=cmd_deals)
-
-    p = sub.add_parser("list", help="listar catálogo")
-    _add_browse_flags(p)
-    p.set_defaults(func=cmd_list)
-
-    p = sub.add_parser("stores", help="tiendas cubiertas")
-    p.add_argument("--active", action="store_true", help="solo tiendas activas")
-    p.set_defaults(func=cmd_stores)
-
-    p = sub.add_parser("new", help="cambios desde tu última revisión")
-    p.add_argument("--reset", action="store_true", help="fijar el marcador ahora")
-    p.add_argument("--min-pct", type=float, default=5.0)
-    p.add_argument("--limit", type=int, default=50)
-    p.set_defaults(func=cmd_new)
-
-    p = sub.add_parser("watch", help="lista de seguimiento")
-    p.add_argument("action", choices=("add", "rm", "list"))
-    p.add_argument("query", nargs="?")
-    p.add_argument("--target", type=float, metavar="N", help="precio objetivo")
-    p.set_defaults(func=cmd_watch)
-
-    p = sub.add_parser("basket", help="dónde comprar una lista de juegos")
-    p.add_argument("games", nargs="*")
-    p.add_argument("--from-watchlist", action="store_true")
-    p.add_argument("--shipping", type=float, default=basket_mod.DEFAULT_SHIPPING,
-                   help="costo de envío por tienda")
-    p.add_argument("--include-oos", action="store_true", help="incluir agotados")
-    p.set_defaults(func=cmd_basket)
-
-    p = sub.add_parser("leaderboard", help="ranking de tiendas")
-    p.add_argument("--limit", type=int, default=20)
-    p.add_argument("--export", choices=("csv", "json", "html"), metavar="FMT")
-    p.set_defaults(func=cmd_leaderboard)
-
-    p = sub.add_parser("history", help="evolución de precios de un juego")
-    p.add_argument("query")
-    p.add_argument("--min-points", type=int, default=2,
-                   help="ocultar tiendas con menos observaciones (default 2)")
-    p.add_argument("--export", choices=("csv", "json", "html"), metavar="FMT")
-    p.set_defaults(func=cmd_history)
-
-    p = sub.add_parser("alerts", help="avisos de precio (para cron)")
-    p.add_argument("--watch", nargs="+", metavar="JUEGO",
-                   help="consultas ad-hoc; por defecto usa la lista de seguimiento")
-    p.add_argument("--threshold", type=float, metavar="N",
-                   help="umbral para --watch")
-    p.add_argument("--in-stock", action="store_true", help="solo ofertas disponibles")
-    p.add_argument("--out", metavar="FILE", help="escribir los avisos como JSON")
-    p.set_defaults(func=cmd_alerts)
-
-    p = sub.add_parser("update", help="scrapear tiendas y actualizar la base")
-    p.add_argument("--sites", nargs="+", metavar="NAME", help="solo estas tiendas")
-    p.add_argument("-w", "--workers", type=int, default=5,
-                   help="hilos concurrentes (default 5; subirlo agrava los bloqueos Cloudflare)")
-    p.add_argument("--dry-run", action="store_true", help="solo la primera página por tienda")
-    p.add_argument("--incremental", action="store_true", help="solo tiendas obsoletas")
-    p.add_argument("--max-age", type=float, default=24, metavar="H",
-                   help="antigüedad máxima en horas para --incremental")
-    p.set_defaults(func=cmd_update)
-
-    p = sub.add_parser("migrate", help="construir/reconstruir la base SQLite")
-    p.add_argument("--rebuild", action="store_true",
-                   help="reemplazar la base existente (necesario tras un cambio de esquema); "
-                        "conserva la lista de seguimiento y los marcadores")
-    p.set_defaults(func=cmd_migrate)
-
-    p = sub.add_parser("doctor", help="estado de la base de datos")
-    p.add_argument("--sigma", type=float, default=5.0,
-                   help="umbral de desvío para precios atípicos")
-    p.add_argument("--limit", type=int, default=10)
-    p.set_defaults(func=cmd_doctor)
-
-    return parser
+def _validate(parser, args) -> None:
+    """Cross-flag rules argparse cannot express on its own."""
+    if args.command == "watch" and args.action in ("add", "rm") and not args.query:
+        parser.error(f"'watch {args.action}' necesita un juego")
+    if args.command == "alerts" and args.watch and args.threshold is None:
+        parser.error("--watch necesita --threshold")
 
 
 def main(argv=None) -> int:
@@ -571,14 +388,21 @@ def main(argv=None) -> int:
         run_tui()
         return 0
 
-    if args.command == "watch" and args.action in ("add", "rm") and not args.query:
-        parser.error(f"'watch {args.action}' necesita un juego")
-    if args.command == "alerts" and args.watch and args.threshold is None:
-        parser.error("--watch necesita --threshold")
+    _validate(parser, args)
 
     try:
-        return args.func(args)
+        return COMMANDS[args.command](args)
     except CommandError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    except db_mod.SchemaVersionError as exc:
+        print(f"Error: la base de datos es de otra versión del esquema.\n"
+              f"  {exc}\n"
+              f"  Ejecuta:  tablero migrate --rebuild", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        # repo/analytics/export raise ValueError for bad arguments; without this
+        # the user got a raw traceback for what is really a usage mistake.
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

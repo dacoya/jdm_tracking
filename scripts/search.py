@@ -65,7 +65,8 @@ def _boost(norm_query: str, norm: str) -> float:
     return 0.0
 
 
-def _fuzzy_candidates(conn, norm_query: str, limit: int = 60) -> list[dict]:
+def _fuzzy_candidates(conn, norm_query: str, limit: int = 60,
+                      include_stale: bool = False) -> list[dict]:
     """
     Typo-tolerant candidates via a full fuzzy scan of game norms.
 
@@ -83,7 +84,8 @@ def _fuzzy_candidates(conn, norm_query: str, limit: int = 60) -> list[dict]:
         limit=limit,
         score_cutoff=FALLBACK_CUTOFF,
     )
-    return repo.games_by_ids(conn, [gid for _, _, gid in matches])
+    return repo.games_by_ids(conn, [gid for _, _, gid in matches],
+                             include_stale=include_stale)
 
 
 def _merge(primary: list[dict], extra: list[dict]) -> list[dict]:
@@ -93,7 +95,8 @@ def _merge(primary: list[dict], extra: list[dict]) -> list[dict]:
 
 
 def search(conn, query: str, limit: int = 30, kinds=None,
-           include_accessories: bool = False) -> list[dict]:
+           include_accessories: bool = False,
+           include_stale: bool = False) -> list[dict]:
     """
     Ranked games matching `query`.
 
@@ -108,9 +111,10 @@ def search(conn, query: str, limit: int = 30, kinds=None,
     if not norm_query:
         return []
 
-    candidates = repo.candidate_games(conn, query)
+    candidates = repo.candidate_games(conn, query, include_stale=include_stale)
     if len(candidates) < FALLBACK_THRESHOLD:
-        candidates = _merge(candidates, _fuzzy_candidates(conn, norm_query))
+        candidates = _merge(
+            candidates, _fuzzy_candidates(conn, norm_query, include_stale=include_stale))
     if not candidates:
         return []
 

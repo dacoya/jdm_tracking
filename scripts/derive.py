@@ -5,6 +5,8 @@ Shared by the one-time JSON migration and the live scrape ingest so both
 produce byte-identical rows -- if these ever drifted, a re-scrape would look
 like a catalog-wide change.
 """
+import re
+
 try:
     from .classify import classify
     from .dedup import _canonical_url
@@ -33,6 +35,30 @@ def flag_value(value):
     return value if value in VALID_FLAGS else None
 
 
+def _is_truncated(title: str) -> bool:
+    """True when a store cut the title short ('Terraforming Mars -...')."""
+    return title.rstrip().endswith(("...", "…"))
+
+
+def slug_name(url: str) -> str:
+    """
+    Recover a product name from a URL slug.
+
+    Several stores publish titles truncated for their own layout, and every one
+    of those collapses to the same prefix: planetaloz lists 'Terraforming Mars
+    -...' (Preludio 2) and 'Terraforming Mars...' (Expedición Ares), which
+    merged into the base game and advertised an expansion's price as its own.
+    The slug still carries the full name.
+    """
+    if not url:
+        return ""
+    tail = url.rstrip("/").rsplit("/", 1)[-1]
+    tail = re.sub(r"\.(html?|php|aspx)$", "", tail, flags=re.IGNORECASE)
+    tail = re.sub(r"^\d+[-_]", "", tail)          # leading catalogue id
+    tail = re.sub(r"[-_]p?\d+$", "", tail)        # trailing product id
+    return tail.replace("-", " ").replace("_", " ").strip()
+
+
 def derive(store: str, record: dict) -> dict | None:
     """
     Build a product row from one scraped record. None when unusable.
@@ -51,6 +77,14 @@ def derive(store: str, record: dict) -> dict | None:
         return None
 
     url = text(record.get("url")) or ""
+
+    # A truncated title is not a reliable identity: match on the slug instead,
+    # while still displaying what the store actually wrote.
+    if _is_truncated(title_raw):
+        from_slug = normalize(clean_title(slug_name(url)))
+        if from_slug and from_slug.startswith(norm) and from_slug != norm:
+            norm = from_slug
+
     url_canon = _canonical_url(url) or f"urn:tablero:{store}:{norm}"
 
     price_original = parse_price(record.get("original_price"))

@@ -19,23 +19,34 @@ import questionary
 try:
     from . import alerts as alerts_mod
     from . import analytics, basket as basket_mod
-    from . import changes, cli, db as db_mod, export as exporter, history
-    from . import render, repo, search as search_mod, watchlist as watch_mod
+    from . import changes, db as db_mod, export as exporter, history
+    from . import parser as parser_mod, render, repo
+    from . import search as search_mod, update as update_mod
+    from . import watchlist as watch_mod
 except ImportError:
     import alerts as alerts_mod
     import analytics
     import basket as basket_mod
     import changes
-    import cli
     import db as db_mod
     import export as exporter
     import history
+    import parser as parser_mod
     import render
     import repo
     import search as search_mod
+    import update as update_mod
     import watchlist as watch_mod
 
 BANNER = "\n🎲  tablero-cl — comparador de juegos de mesa\n"
+
+# Sentinel for "go back" / "no thanks" entries.
+#
+# questionary.Choice falls back to the TITLE when value is None, so
+# Choice("No", value=None) hands back the string "No" -- which reached the
+# exporter as a format name and crashed. A distinct object cannot be confused
+# with a real selection.
+BACK = object()
 
 SORT_LABELS = {
     "discount": "Mayor descuento",
@@ -119,29 +130,26 @@ def _search_flow(conn) -> None:
     if not query or not query.strip():
         return
 
-    hits = search_mod.search(conn, query.strip(), limit=20)
+    hits = search_mod.search(conn, query.strip(), limit=parser_mod.SEARCH_LIMIT)
     if not hits:
         print(f"\n  Sin resultados para '{query.strip()}'.")
         return
 
+    # The picker IS the result list -- printing them separately showed every
+    # result twice, once as text and again as a selectable row.
+    print(f"\n  {len(hits)} resultados para '{query.strip()}':")
+    width = render.hit_title_width(hits)
+    choices = [questionary.Choice(render.hit_label(h, width), value=h) for h in hits]
+    choices.append(questionary.Choice("← Volver al menú", value=BACK))
+
     while True:
-        render.search_results(hits, query.strip())
         choice = _ask(questionary.select(
-            "Ver precios de:",
-            choices=[
-                questionary.Choice(
-                    f"{h['title'][:44]}  ·  desde {render.money(h.get('min_price'))}"
-                    f"  ·  {h.get('n_stores', 0)} tiendas",
-                    value=h,
-                )
-                for h in hits
-            ] + [questionary.Choice("← Volver al menú", value=None)],
-        ))
-        if choice is None:
+            "Ver precios de:", choices=choices, use_shortcuts=False))
+        if choice is None or choice is BACK:
             return
 
         render.price_table(repo.game_prices(conn, choice["game_id"]), choice["title"])
-        if not _ask(questionary.confirm("¿Ver otro resultado?", default=True)):
+        if not _ask(questionary.confirm("¿Ver otro juego de la lista?", default=True)):
             return
 
 
@@ -157,10 +165,12 @@ def _browse_flow(conn, on_sale: bool) -> None:
         return
 
     if sort in analytics.SMART_SORT_OPTIONS:
-        rows = analytics.smart_products(conn, by=sort, limit=100, store=store,
+        rows = analytics.smart_products(conn, by=sort, limit=parser_mod.DEFAULT_LIMIT,
+                                        store=store,
                                         in_stock_only=in_stock, on_sale=on_sale)
     else:
-        rows = repo.products(conn, sort=sort, limit=100, store=store,
+        rows = repo.products(conn, sort=sort, limit=parser_mod.DEFAULT_LIMIT,
+                             store=store,
                              in_stock_only=in_stock, on_sale=on_sale)
     label = "Ofertas" if on_sale else "Catálogo"
     render.product_rows(rows, title=f"{label} ({len(rows)}) · orden: {sort}")
@@ -172,19 +182,17 @@ def _offer_export(rows) -> None:
     if not rows:
         return
     fmt = _ask(questionary.select("¿Exportar?", choices=[
-        questionary.Choice("No", value=None),
-        questionary.Choice("CSV", value="csv"),
-        questionary.Choice("JSON", value="json"),
-        questionary.Choice("HTML", value="html"),
+        questionary.Choice("No", value=BACK),
+        *(questionary.Choice(f.upper(), value=f) for f in exporter.VALID_FORMATS),
     ]))
-    if not fmt:
+    if fmt is None or fmt is BACK:
         return
     import pandas as pd
     print(f"  Exportado: {exporter.export_comparison(pd.DataFrame(rows), fmt)}")
 
 
 def _leaderboard_flow(conn) -> None:
-    rows = analytics.store_leaderboard(conn, limit=25)
+    rows = analytics.store_leaderboard(conn, limit=parser_mod.LEADERBOARD_LIMIT)
     render.leaderboard(rows)
     _offer_export(rows)
 
@@ -197,15 +205,16 @@ def _history_flow(conn) -> None:
     if not hit:
         print(f"\n  Sin resultados para '{query.strip()}'.")
         return
-    trends = history.game_trends(conn, hit["game_id"], min_points=2)
+    threshold = parser_mod.DEFAULT_MIN_POINTS
+    trends = history.game_trends(conn, hit["game_id"], min_points=threshold)
     if not trends:
         # Fall back rather than showing nothing: one observation is still a
         # price, it just is not yet a trend.
         trends = history.game_trends(conn, hit["game_id"], min_points=1)
         if trends:
-            print("\n  (solo una observación por tienda; el historial crece "
+            print("\n  (solo una observación por listado; el historial crece "
                   "con cada actualización)")
-    render.trends(trends, hit["title"], min_points=1)
+    render.trends(trends, hit["title"], min_points=threshold)
 
 
 def _alerts_flow(conn) -> None:
@@ -243,23 +252,7 @@ def _watch_flow(conn) -> None:
         return
 
     if action == "list":
-        entries = watch_mod.entries(conn)
-        if not entries:
-            print("\n  La lista está vacía.")
-            return
-        render.table(
-            [{
-                "title": e["title"],
-                "target": render.money(e["target"]),
-                "price": render.money(e["min_price"]),
-                "stores": e["n_stores"],
-                "hit": "¡SÍ!" if e["hit"] else "",
-            } for e in entries],
-            [("title", "Juego", True), ("target", "Objetivo", False),
-             ("price", "Actual", False), ("stores", "Tiendas", False),
-             ("hit", "Alcanzado", False)],
-            title=f"Lista de seguimiento ({len(entries)})",
-        )
+        render.watchlist(watch_mod.entries(conn))
         return
 
     if action == "rm":
@@ -283,8 +276,10 @@ def _watch_flow(conn) -> None:
         print(f"  Sin resultados para '{query.strip()}'.")
         return
     target = _ask_price(f"Precio objetivo para {hit['title']}")
-    watch_mod.add(conn, hit["game_id"], target=target)
-    print(f"  Siguiendo: {hit['title']}")
+    if watch_mod.add(conn, hit["game_id"], target=target):
+        print(f"  Siguiendo: {hit['title']}")
+    else:
+        print(f"  No se pudo seguir '{hit['title']}'.")
 
 
 def _basket_flow(conn) -> None:
@@ -326,7 +321,8 @@ def _changes_flow(conn) -> None:
             print("  Marcador fijado. Los cambios se listarán desde la próxima actualización.")
         return
 
-    drops = changes.price_drops(conn, min_pct=5.0, limit=50)
+    drops = changes.price_drops(conn, min_pct=parser_mod.DEFAULT_MIN_DROP_PCT,
+                               limit=parser_mod.DEFAULT_LIMIT)
     render.product_rows(
         [{**d, "price_original": d["old_price"], "price_current": d["new_price"],
           "discount_pct": d["drop_pct"]} for d in drops],
@@ -366,16 +362,17 @@ def _update_flow(conn) -> None:
         if not names:
             return
 
-    raw = _ask(questionary.text("Workers concurrentes:", default="5"))
+    raw = _ask(questionary.text("Workers concurrentes:",
+                                default=str(parser_mod.DEFAULT_WORKERS)))
     if raw is None:
         return
     try:
         workers = max(1, int(raw))
     except ValueError:
-        # The documented default. The old code fell back to 20 here, which is
-        # four times this and reliably provokes Cloudflare blocks.
-        workers = 5
-        print("  Valor inválido; usando 5.")
+        # The documented default. The old code fell back to 20 here, four times
+        # this, which reliably provokes Cloudflare blocks.
+        workers = parser_mod.DEFAULT_WORKERS
+        print(f"  Valor inválido; usando {workers}.")
 
     dry_run = _ask(questionary.confirm("¿Dry run (solo 1 página)?", default=False))
     if dry_run is None:
@@ -384,11 +381,22 @@ def _update_flow(conn) -> None:
             "Esto hará scraping en vivo. ¿Continuar?", default=True)):
         return
 
-    args = cli.build_parser().parse_args(["update"])
-    args.sites, args.workers, args.dry_run = names, workers, dry_run
-    args.incremental, args.max_age = (scope == "incremental"), 24
-    cli.cmd_update(args)
+    try:
+        from .scrape import sites
+    except ImportError:
+        from scrape import sites
 
+    targets = update_mod.select_sites(
+        conn, sites, names, scope == "incremental", 24)
+    if not targets:
+        print("  Todo al día. Nada que actualizar.")
+        return
+
+    print(f"  Actualizando {render.plural(len(targets), 'tienda')}…")
+    render.update_report(update_mod.update_stores(
+        conn, targets, workers=workers, dry_run=dry_run,
+        on_failure=lambda name, exc: print(f"  [{name}] falló: {exc}"),
+    ))
 
 _ACTIONS = {
     "search": _search_flow,

@@ -15,6 +15,7 @@ already consuming that output keeps working.
 """
 import json
 import time
+from pathlib import Path
 
 try:
     from . import repo, search as search_mod, watchlist as watch_mod
@@ -85,6 +86,10 @@ def from_queries(conn, queries, threshold: float,
 
 def write(alerts: list, path) -> str:
     """Write alerts as JSON. Returns the path."""
-    with open(path, "w", encoding="utf-8") as f:
+    # Create the directory: `--out reports/hoy.json` otherwise raised an
+    # uncaught FileNotFoundError, unlike export which already handles this.
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with open(target, "w", encoding="utf-8") as f:
         json.dump(alerts, f, ensure_ascii=False, indent=2)
-    return str(path)
+    return str(target)

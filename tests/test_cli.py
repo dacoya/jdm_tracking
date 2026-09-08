@@ -10,6 +10,7 @@ import os
 import pytest
 
 import cli
+import update
 
 
 # ---------------------------------------------------------------------------
@@ -48,21 +49,21 @@ SITES = [{"name": "alpha"}, {"name": "beta"}, {"name": "gamma"}]
 
 
 def test_select_named_sites(db_conn):
-    chosen = cli._select_sites(db_conn, SITES, ["beta"], False, 24)
+    chosen = update.select_sites(db_conn, SITES, ["beta"], False, 24)
     assert [s["name"] for s in chosen] == ["beta"]
 
 
 def test_select_named_sites_is_case_insensitive(db_conn):
-    assert cli._select_sites(db_conn, SITES, ["BETA"], False, 24)[0]["name"] == "beta"
+    assert update.select_sites(db_conn, SITES, ["BETA"], False, 24)[0]["name"] == "beta"
 
 
 def test_unknown_site_rejected(db_conn):
-    with pytest.raises(cli.CommandError, match="desconocida"):
-        cli._select_sites(db_conn, SITES, ["nope"], False, 24)
+    with pytest.raises(update.UnknownSiteError, match="desconocida"):
+        update.select_sites(db_conn, SITES, ["nope"], False, 24)
 
 
 def test_full_run_selects_everything(db_conn):
-    assert len(cli._select_sites(db_conn, SITES, None, False, 24)) == 3
+    assert len(update.select_sites(db_conn, SITES, None, False, 24)) == 3
 
 
 def test_incremental_skips_recently_scraped(db_conn):
@@ -74,7 +75,7 @@ def test_incremental_skips_recently_scraped(db_conn):
         ("alpha", now, 10),
     )
     db_conn.commit()
-    chosen = [s["name"] for s in cli._select_sites(db_conn, SITES, None, True, 24)]
+    chosen = [s["name"] for s in update.select_sites(db_conn, SITES, None, True, 24)]
     assert "alpha" not in chosen
     assert {"beta", "gamma"} <= set(chosen)
 
@@ -89,7 +90,7 @@ def test_incremental_reselects_stale_and_failed(db_conn):
          ("beta", now, None, 0)],         # just failed
     )
     db_conn.commit()
-    chosen = [s["name"] for s in cli._select_sites(db_conn, SITES, None, True, 24)]
+    chosen = [s["name"] for s in update.select_sites(db_conn, SITES, None, True, 24)]
     assert {"alpha", "beta"} <= set(chosen)
 
 

@@ -28,6 +28,24 @@ _EDITION_TAG = re.compile(
 )
 
 
+# "Base game" qualifiers. These name the plain game, so "Clank", "Clank Base"
+# and "Clank (juego base)" are one product listed three ways -- searching Clank
+# returned all three as separate results with different prices.
+_BASE_QUALIFIER = re.compile(
+    r'[\(\[]?\b(juego\s+)?base\b[\)\]]?\s*$',
+    re.IGNORECASE,
+)
+
+# A leading "expansión:" qualifier. What follows is the expansion's actual name,
+# so "Clank! Expansión: Tesoros Sumergidos" and "Clank! Tesoros Sumergidos" are
+# the same product. Requires a following word, or "Catan Expansión" alone would
+# collapse into "Catan".
+_EXPANSION_QUALIFIER = re.compile(
+    r'\b(mini\s?)?expansi[oó]n(es)?\b(?=[\s:,\-]+\w)',
+    re.IGNORECASE,
+)
+
+
 def normalize(text: str) -> str:
     """
     Return a cleaned, lowercase, accent-free, punctuation-free version of a
@@ -35,11 +53,16 @@ def normalize(text: str) -> str:
 
     Pipeline:
       1. Lowercase
-      2. Strip language tags  ("en español", "en inglés", etc.)
+      2. Strip language tags   ("en español", "en inglés", etc.)
       3. Strip edition markers ("edición deluxe", "2da edición", etc.)
-      4. Remove accents        (é→e, ñ→n, ü→u, etc.)
-      5. Replace punctuation   with space (!, :, -, (, ), /, etc.)
-      6. Collapse whitespace
+      4. Strip qualifiers that do not change which product it is
+         ("Clank Base" -> "clank"; "Clank Expansión: X" -> "clank x")
+      5. Remove accents        (é→e, ñ→n, ü→u, etc.)
+      6. Replace punctuation   with space (!, :, -, (, ), /, etc.)
+      7. Collapse whitespace
+
+    Note this only affects the MATCH key. The title shown on screen keeps
+    whatever the store wrote.
     """
     if not isinstance(text, str):
         return ''
@@ -47,6 +70,8 @@ def normalize(text: str) -> str:
     text = text.lower()
     text = _LANG_TAG.sub(' ', text)
     text = _EDITION_TAG.sub(' ', text)
+    text = _EXPANSION_QUALIFIER.sub(' ', text)
+    text = _BASE_QUALIFIER.sub(' ', text.strip())
 
     # NFKD decomposition separates base letters from combining marks (accents).
     text = unicodedata.normalize('NFKD', text)
@@ -63,19 +88,37 @@ def normalize(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 # Generic noise phrases stores append to product titles.
+#
+# Only phrases that carry NO information in a board-game store belong here.
+# "Juego de Mesa" is tautological; attributes like "cooperativo" or "familiar"
+# describe a game without identifying it.
+#
+# Deliberately absent: "juego de cartas", "juego de dados", "juego de rol" and
+# their English forms. Those name a different PRODUCT, not a category, and
+# stripping them merged distinct games under one title -- "Catan" and
+# "Catan: Juego de Cartas" became the same entry, so the card game's $10.990
+# was advertised as the price of the board game. Over-merging invents a wrong
+# price; under-merging just shows two honest rows, so the tie goes to keeping.
 _NOISE_PHRASE = (
     r'juegos?\s+de\s+mesa'
-    r'|board\s+game|card\s+game|juego\s+de\s+cartas'
-    r'|juego\s+de\s+rol|rol\s+game|role[\-\s]?playing\s+game|rpg'
+    r'|board\s+game'
     r'|juego\s+familiar|juego\s+educativo|juego\s+cooperativo'
     r'|juego\s+de\s+estrategia|party\s+game'
-    r'|juego\s+de\s+dados'
 )
 
 # Standalone category words that appear as comma/separator-delimited tokens.
+#
+# Only pure ATTRIBUTES belong here -- words that describe a game without ever
+# naming one. "party", "dados", "cartas" and "rol" were removed because each
+# also ends a real product name: "Sushi Go - Party" was being reduced to
+# "Sushi Go" and merged with that different, cheaper game, even though 23
+# stores sell Sushi Go Party as its own title.
+#
+# Some stores do use these as genuine tags ("...!Juego de Mesa, Party, Juego de
+# Cartas"), so a trailing tag now survives into the display title. That is the
+# cheaper mistake: a slightly noisy label, rather than a wrong price.
 _NOISE_WORD = (
     r'cooperativo|familiar|educativo|estrategia|competitivo|abstracto'
-    r'|party|dados|cartas|rol\b'
 )
 
 # Pass 1: noise phrase preceded by a proper word boundary (space, separator, or start).
