@@ -1,7 +1,7 @@
 """Price parsing and title normalization -- the shared primitives everything else builds on."""
 import pytest
 
-from utils import calc_discount_pct, clean_title, normalize, parse_price
+from utils import clean_title, normalize, parse_price
 
 
 @pytest.mark.parametrize("raw, expected", [
@@ -109,8 +109,3 @@ def test_normalize(raw, expected):
 
 def test_normalize_non_string():
     assert normalize(None) == ""
-
-
-def test_calc_discount_pct():
-    assert calc_discount_pct("$50.000", "$40.000") == pytest.approx(20.0)
-    assert calc_discount_pct("$50.000", None) is None

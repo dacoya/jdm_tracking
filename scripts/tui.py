@@ -187,8 +187,7 @@ def _offer_export(rows) -> None:
     ]))
     if fmt is None or fmt is BACK:
         return
-    import pandas as pd
-    print(f"  Exportado: {exporter.export_comparison(pd.DataFrame(rows), fmt)}")
+    print(f"  Exportado: {exporter.export_comparison(rows, fmt)}")
 
 
 def _leaderboard_flow(conn) -> None:

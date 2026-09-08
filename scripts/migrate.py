@@ -107,7 +107,7 @@ def _game_rows(rows: list) -> dict:
 
     Title: the shortest cleaned title in the cluster, because store-specific
     noise is additive -- the same game is "Catan" in one store and "Catan Juego
-    Base 4 Jugadores" in another. This mirrors dedup.merge_variants' canonical.
+    Base 4 Jugadores" in another.
 
     Kind: the most common kind among the cluster's products, ties broken toward
     the more game-like kind. A single store mislabelling one listing should not

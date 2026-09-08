@@ -9,12 +9,28 @@ import re
 
 try:
     from .classify import classify
-    from .dedup import _canonical_url
     from .utils import clean_title, normalize, parse_price
 except ImportError:
     from classify import classify
-    from dedup import _canonical_url
     from utils import clean_title, normalize, parse_price
+
+
+def canonical_url(url) -> str:
+    """
+    Normalise a URL for identity comparison.
+
+    Scheme, www, query string and trailing slash are dropped, so the same
+    product page reached by different links is recognised as one product.
+    This pairing of store + canonical URL is what makes price history and
+    new/restock detection meaningful across scrapes.
+    """
+    if not isinstance(url, str):
+        return ""
+    u = url.strip().lower()
+    u = re.sub(r"^https?://", "", u)
+    u = re.sub(r"^www\.", "", u)
+    u = u.split("?")[0].split("#")[0]
+    return u.rstrip("/")
 
 OUT_OF_STOCK = "agotado"
 VALID_FLAGS = ("new", "restock")
@@ -85,7 +101,7 @@ def derive(store: str, record: dict) -> dict | None:
         if from_slug and from_slug.startswith(norm) and from_slug != norm:
             norm = from_slug
 
-    url_canon = _canonical_url(url) or f"urn:tablero:{store}:{norm}"
+    url_canon = canonical_url(url) or f"urn:tablero:{store}:{norm}"
 
     price_original = parse_price(record.get("original_price"))
     price_current = parse_price(record.get("current_price"))

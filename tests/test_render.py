@@ -228,3 +228,50 @@ def test_restock_is_not_labelled_as_new():
     assert render.FLAG_MARK["restock"] in render._marks({"is_restock": True})
     assert render.FLAG_MARK["new"] in render._marks({"is_new": True})
     assert render._marks({"kind": "game"}) == ""
+
+
+# ---------------------------------------------------------------------------
+# Export
+# ---------------------------------------------------------------------------
+
+def test_export_takes_plain_rows(tmp_path):
+    """
+    Export used to require a DataFrame, so both callers converted list[dict]
+    just to hand it straight back -- pulling pandas into the CLI's import path
+    for a job csv/json do natively.
+    """
+    import csv as csv_mod
+    import json as json_mod
+
+    import export
+
+    rows = [{"store": "updown", "price": 1000, "title": "Catan"},
+            {"store": "flexo", "price": None, "title": 'Un "raro" <b>'}]
+
+    out = export.export_comparison(rows, "csv", tmp_path / "a.csv")
+    assert [r["store"] for r in csv_mod.DictReader(open(out, encoding="utf-8"))] \
+        == ["updown", "flexo"]
+
+    out = export.export_comparison(rows, "json", tmp_path / "a.json")
+    assert json_mod.loads(open(out, encoding="utf-8").read())[0]["price"] == 1000
+
+    out = export.export_comparison(rows, "html", tmp_path / "a.html")
+    html = open(out, encoding="utf-8").read()
+    assert "&lt;b&gt;" in html and "<b>" not in html.split("<h1>")[1]
+
+
+def test_export_handles_rows_with_different_keys(tmp_path):
+    """Different queries return different columns; the union is the header."""
+    import export
+    out = export.export_comparison(
+        [{"a": 1}, {"b": 2}], "csv", tmp_path / "x.csv")
+    header = open(out, encoding="utf-8").readline().strip()
+    assert set(header.split(",")) == {"a", "b"}
+
+
+def test_export_rejects_unknown_format(tmp_path):
+    import pytest as _pytest
+
+    import export
+    with _pytest.raises(ValueError, match="Unknown export format"):
+        export.export_comparison([{"a": 1}], "pdf", tmp_path / "x.pdf")

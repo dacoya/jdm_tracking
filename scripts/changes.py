@@ -72,12 +72,6 @@ def price_drops(conn, since: int | None = None, name: str = DEFAULT_CURSOR,
     return [dict(r) for r in conn.execute(sql, (since, since, float(min_pct), int(limit)))]
 
 
-def watched_drops(conn, **kwargs) -> list[dict]:
-    """Price drops restricted to games on the watchlist."""
-    watched = {r[0] for r in conn.execute("SELECT game_id FROM watchlist")}
-    return [d for d in price_drops(conn, **kwargs) if d["game_id"] in watched]
-
-
 def new_arrivals(conn, since: int | None = None, name: str = DEFAULT_CURSOR,
                  limit: int = 100) -> list[dict]:
     """Products first seen at or after the cutoff."""

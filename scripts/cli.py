@@ -135,9 +135,7 @@ def _export(rows: list[dict], fmt: str) -> None:
     """Write rows to data/exports/ in the requested format."""
     if not fmt or not rows:
         return
-    import pandas as pd
-    path = exporter.export_comparison(pd.DataFrame(rows), fmt)
-    print(f"\n  Exportado: {path}")
+    print(f"\n  Exportado: {exporter.export_comparison(rows, fmt)}")
 
 
 def _browse_title(label: str, shown: int, total: int, sort: str) -> str:

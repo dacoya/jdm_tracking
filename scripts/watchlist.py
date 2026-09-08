@@ -59,13 +59,3 @@ def entries(conn) -> list[dict]:
         row["hit"] = bool(target and price and price <= target)
         rows.append(row)
     return rows
-
-
-def hits(conn) -> list[dict]:
-    """Watched games currently at or below their target price."""
-    return [e for e in entries(conn) if e["hit"]]
-
-
-def cheapest_store(conn, game_id: int) -> dict | None:
-    offers = [p for p in repo.game_prices(conn, game_id) if (p.get("price_eff") or 0) > 0]
-    return offers[0] if offers else None
