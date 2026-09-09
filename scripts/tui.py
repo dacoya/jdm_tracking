@@ -103,15 +103,43 @@ def _ask_sort(default="discount"):
     ))
 
 
-def _ask_price(label):
-    raw = _ask(questionary.text(f"{label} (vacío = sin límite):"))
-    if raw is None or not raw.strip():
+def _parse_price(raw):
+    """A Chilean-formatted amount as a float, or None when it is not one."""
+    raw = raw.strip()
+    if not raw:
         return None
     try:
         return float(raw.replace(".", "").replace(",", "."))
     except ValueError:
         print(f"  '{raw}' no es un número; se ignora.")
         return None
+
+
+def _ask_price(label):
+    raw = _ask(questionary.text(f"{label} (vacío = sin límite):"))
+    return None if raw is None else _parse_price(raw)
+
+
+def _ask_price_range():
+    """
+    (min, max), chosen from a picker so the bound being set is never in doubt.
+
+    An earlier version took "10000-30000" in one text field. Fewer keystrokes,
+    but the syntax had to be remembered and a bare number was ambiguous.
+    """
+    mode = _ask(questionary.select("Filtrar por precio:", choices=[
+        questionary.Choice("Sin filtro", value=BACK),
+        questionary.Choice("Precio máximo (hasta)", value="max"),
+        questionary.Choice("Precio mínimo (desde)", value="min"),
+        questionary.Choice("Rango (desde – hasta)", value="range"),
+    ]))
+    if mode is None or mode is BACK:
+        return None, None
+    if mode == "max":
+        return None, _ask_price("Precio máximo")
+    if mode == "min":
+        return _ask_price("Precio mínimo"), None
+    return _ask_price("Precio mínimo"), _ask_price("Precio máximo")
 
 
 # ---------------------------------------------------------------------------
@@ -151,21 +179,34 @@ def _browse_flow(conn, on_sale: bool) -> None:
     in_stock = _ask(questionary.confirm("¿Solo disponibles?", default=False))
     if in_stock is None:
         return
+    min_price, max_price = _ask_price_range()
     sort = _ask_sort()
     if sort is None:
         return
 
     if sort in analytics.SMART_SORT_OPTIONS:
         rows = analytics.smart_products(conn, by=sort, limit=parser_mod.DEFAULT_LIMIT,
-                                        store=store,
+                                        store=store, min_price=min_price,
+                                        max_price=max_price,
                                         in_stock_only=in_stock, on_sale=on_sale)
     else:
         rows = repo.products(conn, sort=sort, limit=parser_mod.DEFAULT_LIMIT,
-                             store=store,
+                             store=store, min_price=min_price, max_price=max_price,
                              in_stock_only=in_stock, on_sale=on_sale)
     label = "Ofertas" if on_sale else "Catálogo"
-    render.product_rows(rows, title=f"{label} ({len(rows)}) · orden: {sort}")
+    render.product_rows(rows, title=_browse_title(label, len(rows), sort,
+                                                  min_price, max_price))
     _offer_export(rows)
+
+
+def _browse_title(label, n, sort, min_price, max_price) -> str:
+    """Heading that states the price bounds, so a short list is not a mystery."""
+    parts = [f"{label} ({n})", f"orden: {sort}"]
+    if min_price is not None:
+        parts.append(f"desde {render.money(min_price)}")
+    if max_price is not None:
+        parts.append(f"hasta {render.money(max_price)}")
+    return " · ".join(parts)
 
 
 def _offer_export(rows) -> None:
