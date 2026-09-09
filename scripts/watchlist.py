@@ -9,11 +9,6 @@ currently at or below their target.
 """
 import time
 
-try:
-    from . import repo
-except ImportError:
-    import repo
-
 
 def add(conn, game_id: int, target: float | None = None, note: str | None = None) -> bool:
     """Add or update a watch. True when the game exists and was stored."""

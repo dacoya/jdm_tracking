@@ -5,7 +5,6 @@ These carry real logic (store resolution, incremental site selection, the data
 root override) and were the largest untested surface after the restructure.
 """
 import importlib
-import os
 
 import pytest
 

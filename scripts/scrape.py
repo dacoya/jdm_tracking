@@ -154,18 +154,6 @@ def _presta_prices(item):
     return _norm(reg or price, price if reg else None)
 
 
-def _old_new_prices(container, old_cls, new_cls):
-    """
-    Generic old/new price pair from two sibling elements.
-    Returns (original_price, current_price) via _norm.
-    """
-    if not container:
-        return None, None
-    old_e = container.find(class_=old_cls)
-    new_e = container.find(class_=new_cls)
-    return _norm(_txt(old_e) or _txt(new_e), _txt(new_e) if old_e else None)
-
-
 # ── Stock helpers ──────────────────────────────────────────────────────────────
 
 def _stock_flags(item, oos_cls='out_of_stock', discount_cls='discount', curr=None):
@@ -1027,7 +1015,7 @@ def tentami(html):
                 'url': url,
             })
         except Exception as e:
-            pass
+            print(f"  [tentami] skipping item: {e}")
     return res
 
 

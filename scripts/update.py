@@ -53,7 +53,8 @@ def update_stores(conn, targets, workers: int = 5, dry_run: bool = False,
     except ImportError:
         from runner import scrape_site
 
-    totals = {"ingested": 0, "new": 0, "restock": 0, "failed": 0}
+    # Counters plus a "rejected" breakdown, so the values are not all ints.
+    totals: dict = {"ingested": 0, "new": 0, "restock": 0, "failed": 0}
     rejected: dict = {}
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -62,7 +63,7 @@ def update_stores(conn, targets, workers: int = 5, dry_run: bool = False,
         for future in as_completed(futures):
             site = futures[future]
             try:
-                df = future.result()
+                records = future.result() or []
             except Exception as exc:
                 if on_failure:
                     on_failure(site["name"], exc)
@@ -70,7 +71,6 @@ def update_stores(conn, targets, workers: int = 5, dry_run: bool = False,
                 totals["failed"] += 1
                 continue
 
-            records = df.to_dict("records") if df is not None and not df.empty else []
             result = ingest_mod.ingest_store(conn, site["name"], records)
             if result["skipped"]:
                 ingest_mod.record_failure(conn, site["name"])

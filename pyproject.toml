@@ -11,7 +11,6 @@ requires-python = ">=3.10"
 dependencies = [
     "requests",
     "beautifulsoup4",
-    "pandas",
     "rapidfuzz",
     "tqdm",
     "questionary",
