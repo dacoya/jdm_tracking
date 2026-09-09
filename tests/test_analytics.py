@@ -2,6 +2,7 @@
 import pytest
 
 import alerts
+import changes
 import analytics
 import history
 import search
@@ -188,3 +189,13 @@ def test_partition_counts_reasons():
 def test_outliers_are_reported_not_dropped(db_conn):
     """A bargain and a typo look identical, so this is a report, not a filter."""
     assert isinstance(validation.price_outliers(db_conn, sigma=0.1), list)
+
+
+def test_changes_limit_none_means_unlimited(db_conn):
+    """parser.DEFAULT_LIMIT is None; the TUI passes it straight through."""
+    assert changes._limit(None) == -1
+    assert changes._limit(0) == 0
+    assert changes._limit(5) == 5
+    changes.set_cursor(db_conn)
+    assert isinstance(changes.price_drops(db_conn, min_pct=5.0, limit=None), list)
+    assert isinstance(changes.new_arrivals(db_conn, limit=None), list)

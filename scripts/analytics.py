@@ -56,7 +56,7 @@ _SCORE = {
 
 
 def smart_products(conn, by: str = "value", limit: int | None = None,
-                   store: str = None, in_stock_only: bool = False,
+                   store: str | None = None, in_stock_only: bool = False,
                    kind=None, on_sale: bool = False,
                    min_price=None, max_price=None,
                    include_stale: bool = False) -> list[dict]:
@@ -112,7 +112,7 @@ def smart_products(conn, by: str = "value", limit: int | None = None,
     return [dict(r) for r in conn.execute(sql, params)]
 
 
-def store_leaderboard(conn, limit: int = None) -> list[dict]:
+def store_leaderboard(conn, limit: int | None = None) -> list[dict]:
     """
     Stores ranked cheapest-first.
 

@@ -30,8 +30,13 @@ def set_cursor(conn, ts: int | None = None, name: str = DEFAULT_CURSOR) -> int:
     return ts
 
 
+def _limit(limit) -> int:
+    """SQL bind value for `limit`; None means no limit (SQLite reads -1 that way)."""
+    return -1 if limit is None else int(limit)
+
+
 def price_drops(conn, since: int | None = None, name: str = DEFAULT_CURSOR,
-                min_pct: float = 5.0, limit: int = 100) -> list[dict]:
+                min_pct: float = 5.0, limit: int | None = 100) -> list[dict]:
     """
     Products whose price fell since `since` (default: the stored cursor).
 
@@ -69,11 +74,11 @@ def price_drops(conn, since: int | None = None, name: str = DEFAULT_CURSOR,
          ORDER BY drop_pct DESC
          LIMIT ?
     """
-    return [dict(r) for r in conn.execute(sql, (since, since, float(min_pct), int(limit)))]
+    return [dict(r) for r in conn.execute(sql, (since, since, float(min_pct), _limit(limit)))]
 
 
 def new_arrivals(conn, since: int | None = None, name: str = DEFAULT_CURSOR,
-                 limit: int = 100) -> list[dict]:
+                 limit: int | None = 100) -> list[dict]:
     """Products first seen at or after the cutoff."""
     since = since if since is not None else get_cursor(conn, name)
     if since is None:
@@ -86,4 +91,4 @@ def new_arrivals(conn, since: int | None = None, name: str = DEFAULT_CURSOR,
          ORDER BY first_seen DESC, store
          LIMIT ?
     """
-    return [dict(r) for r in conn.execute(sql, (since, int(limit)))]
+    return [dict(r) for r in conn.execute(sql, (since, _limit(limit)))]

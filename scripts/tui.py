@@ -8,8 +8,9 @@ version:
     returns to the same list instead of leaving it scrolled off screen.
   * One consistent widget set. The old drill-down dropped to a raw input()
     loop mid-flow, which broke arrow-key navigation inside the TUI.
-  * Enter goes back. The old prompt accepted only a literal "0" and re-asked
-    forever on an empty line.
+  * Results page through `less` (LESS=FRX), so long tables scroll and stay on
+    screen after quitting. No extra "press Enter" step between a result and the
+    menu.
   * The store picker filters as you type instead of listing 47 flat entries.
   * The worker prompt falls back to the documented default of 5; the previous
     fallback silently used 20, which provokes Cloudflare blocks.
@@ -67,14 +68,6 @@ def _ask(prompt):
         return prompt.ask()
     except (KeyboardInterrupt, EOFError):
         return None
-
-
-def _pause() -> None:
-    """Wait for Enter. Any input returns -- the old version only accepted '0'."""
-    try:
-        input("\n  [Enter] para volver al menú… ")
-    except (KeyboardInterrupt, EOFError):
-        print()
 
 
 def _ask_store(conn):
@@ -149,8 +142,6 @@ def _search_flow(conn) -> None:
             return
 
         render.price_table(repo.game_prices(conn, choice["game_id"]), choice["title"])
-        if not _ask(questionary.confirm("¿Ver otro juego de la lista?", default=True)):
-            return
 
 
 def _browse_flow(conn, on_sale: bool) -> None:
@@ -438,8 +429,12 @@ def run_tui() -> None:
             ]))
             if action in (None, "quit"):
                 break
-            _ACTIONS[action](conn)
-            _pause()
+            try:
+                _ACTIONS[action](conn)
+            except Exception as exc:
+                # One failing flow must not end the session: report it and
+                # return to the menu.
+                print(f"\n  Error en '{action}': {exc}")
     finally:
         conn.close()
         print("\n¡Hasta luego! 🎲")

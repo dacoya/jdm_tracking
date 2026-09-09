@@ -80,7 +80,7 @@ def page(text: str) -> None:
         print(text)
 
 
-def plural(n: int, singular: str, plural_form: str = None) -> str:
+def plural(n: int, singular: str, plural_form: str | None = None) -> str:
     """'1 tienda' / '2 tiendas' -- the count and its correctly-inflected noun."""
     word = singular if abs(n) == 1 else (plural_form or singular + "s")
     return f"{n} {word}"
@@ -176,7 +176,7 @@ def _widths(rows: list[dict], columns: list[tuple], available: int) -> list[int]
 
 
 def table(rows: list[dict], columns: list[tuple], title: str = "",
-          limit: int = None, empty: str = "(sin resultados)",
+          limit: int | None = None, empty: str = "(sin resultados)",
           footer: str = "") -> None:
     """
     Render rows as an aligned table, paging when it will not fit on screen.
@@ -288,7 +288,7 @@ def price_table(offers: list[dict], title: str) -> None:
     ], title=f"\n{title}")
 
 
-def product_rows(rows: list[dict], title: str = "", limit: int = None) -> None:
+def product_rows(rows: list[dict], title: str = "", limit: int | None = None) -> None:
     prepared = [
         {
             "title": (FLAG_MARK.get(r.get("flag"), "") + " " + (r.get("title") or "")).strip(),

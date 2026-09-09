@@ -120,7 +120,7 @@ def _best_single(offers: dict, shipping: float) -> str:
     stores = {s for per_store in offers.values() for s in per_store}
     scored = []
     for store in stores:
-        total, picks, missing = _cost(offers, {store}, shipping)
+        total, _, missing = _cost(offers, {store}, shipping)
         scored.append((len(missing), total, store))
     return min(scored)[2]
 
